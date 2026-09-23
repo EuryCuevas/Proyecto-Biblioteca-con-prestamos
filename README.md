@@ -51,3 +51,20 @@ flowchart LR
 - La máquina de estados de Prestamo es independiente de la de SolicitudPermiso.
 
 Prueba mental: si el módulo de negocio se cambiara por otro del catálogo, ninguna línea del Core tendría que tocarse.
+
+
+## Instrucciones de ejecución
+
+1. Clonar el repositorio:
+   ```bash
+   git clone [https://github.com/EuryCuevas/Proyecto-Biblioteca-con-prestamos.git](https://github.com/EuryCuevas/Proyecto-Biblioteca-con-prestamos.git)
+
+Restaurar dependencias:
+
+Bash
+dotnet restore
+
+Compilar y ejecutar la aplicación:
+
+Bash
+dotnet run
