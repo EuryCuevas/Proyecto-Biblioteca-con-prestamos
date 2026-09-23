@@ -1,6 +1,6 @@
 # BibliotecaCore
 
-Proyecto final de Programación III (ITLA, 2026-C-3): un Core compartido con los 25 proyectos del curso, más el módulo de negocio propio, **Biblioteca con préstamos**.
+Proyecto final de Programación III (ITLA, 2026-C-3): un Core compartido, más el módulo de negocio propio, **Biblioteca con préstamos**.
 
 ## Diagrama de componentes
 
