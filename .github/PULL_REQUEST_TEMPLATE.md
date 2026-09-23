@@ -1,4 +1,3 @@
-```markdown
 ## Qué cambia
 <!-- Descripción breve de los cambios realizados -->
 
@@ -10,4 +9,3 @@
 
 ## Qué NO incluye
 <!-- Funcionalidades fuera del alcance de este PR -->
-```[cite: 2]
