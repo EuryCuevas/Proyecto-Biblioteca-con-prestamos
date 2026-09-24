@@ -1,0 +1,40 @@
+## Visual Studio / .NET Core / C#
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Directorios de compilación y salida (Build outputs)
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+build/
+
+# Visual Studio Cache y archivos temporales
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Packages de NuGet
+*.nupkg
+*.snupkg
+**/packages/
+!**/packages/build/
+project.lock.json
+project.assets.json
+packages.config
+
+# Archivos de configuración local y credenciales / secretos
+appsettings.Development.json
+appsettings.Local.json
+*.env
+*.pem
+*.pfx
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
