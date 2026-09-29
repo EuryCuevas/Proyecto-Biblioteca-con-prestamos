@@ -1,6 +1,6 @@
 # BibliotecaCore
 
-Proyecto final: Realizar un programa que controle préstamos, devoluciones y disponibilidad de libros o recursos.
+RAEDME del proyecto final a realizar.
 
 ## Diagrama de componentes
 
