@@ -1,6 +1,8 @@
+Esta es la version editada por la rama B
+
 # BibliotecaCore
 
-Proyecto final: Realizar un programa que controle préstamos, devoluciones y disponibilidad de libros o recursos.
+Proyecto final de Programación III (ITLA, 2026-C-3): un Core compartido, más el módulo de negocio propio, Biblioteca con préstamos.
 
 ## Diagrama de componentes
 
