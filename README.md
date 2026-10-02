@@ -1,3 +1,4 @@
+Esta es la version editada por la rama B
 Esta es la version editada por la rama A
 
 # BibliotecaCore
