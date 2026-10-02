@@ -1,0 +1,19 @@
+## Build and output files
+bin/
+obj/
+out/
+
+## Visual Studio / VS Code
+.vs/
+.vscode/
+*.user
+*.suo
+*.userossc
+
+## Packages
+*.nupkg
+packages/
+
+## OS generated files
+.DS_Store
+Thumbs.db
