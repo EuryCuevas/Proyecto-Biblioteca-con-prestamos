@@ -175,7 +175,7 @@ src/
   Biblioteca.Nucleo/          Transversal: errores tipados, puerto de auditoría, configuración
   Biblioteca.Identidad/       PIEZA 1 del Core. Usuario, sesión, roles, política de contraseñas
   Biblioteca.Correo/          Cola de correo y entrega SMTP
-  Biblioteca.Biblioteca/      MÓDULO DE NEGOCIO. Máquina de estados del préstamo
+  Biblioteca.Biblioteca/      MÓDULO DE NEGOCIO. Catálogo, socios, préstamos y sus relaciones
   Biblioteca.Api/             Host HTTP. Configuración, DI, migraciones, traducción de errores
 
 tools/
@@ -184,7 +184,7 @@ tools/
 tests/
   Biblioteca.Nucleo.Tests/      Contratos del núcleo transversal
   Biblioteca.Identidad.Tests/   Política de operaciones, guard de arranque, contraseñas, tokens
-  Biblioteca.Biblioteca.Tests/  Estructura de la máquina de estados del negocio
+  Biblioteca.Biblioteca.Tests/  Máquina de estados del negocio y relaciones del modelo de datos
   Biblioteca.Api.Tests/         Arranque real contra SQL Server
 
 docs/
@@ -254,7 +254,7 @@ Devuelve el estado del servicio. Prueba de paso 5.
 
 ### 6.2 La base de datos se crea y se puebla
 
-Abrir **SSMS** → base `Biblioteca**. Deben existir estas siete tablas:
+Abrir **SSMS** → base `Biblioteca`. Deben existir estas diez tablas:
 
 | Tabla | Pertenece a | Qué contiene |
 |---|---|---|
@@ -263,6 +263,9 @@ Abrir **SSMS** → base `Biblioteca**. Deben existir estas siete tablas:
 | `TokenActivacion` | Core · Identidad | Token hasheado, emitido, vence, usado |
 | `CodigoRecuperacion` | Core · Identidad | Código hasheado, emitido, vence, usado |
 | `CorreoEnCola` | Core · Correo | Destinatario, asunto, cuerpo, estado, intentos, creado, enviado, último error |
+| `Recurso` | Módulo de negocio | Título, autor, ISBN, editorial, año, género, activo |
+| `Ejemplar` | Módulo de negocio | Copia física: código, recurso al que pertenece, ingreso, retirado |
+| `Socio` | Módulo de negocio | Número de socio, usuario del Core, alta, activo, cupos |
 | `Prestamo` | Módulo de negocio | Socio, ejemplar, estado, fechas |
 | `__EFMigrationsHistory` | EF Core | Migraciones aplicadas |
 
@@ -271,6 +274,32 @@ Comprobación en SSMS:
 ```sql
 SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME;
 ```
+
+**Las tres relaciones existen como llaves foráneas de verdad** (RF-NEG-01 pide que estén
+en el modelo de datos, no sólo en el diagrama):
+
+```sql
+SELECT OBJECT_NAME(parent_object_id) + '.' + name AS Llave,
+       OBJECT_NAME(referenced_object_id)            AS ApuntaA
+FROM sys.foreign_keys ORDER BY Llave;
+```
+
+| Llave | Apunta a | Relación |
+|---|---|---|
+| `FK_Ejemplar_Recurso_RecursoId` | `Recurso` | un recurso tiene N ejemplares |
+| `FK_Prestamo_Socio_SocioId` | `Socio` | un socio tiene N préstamos |
+| `FK_Prestamo_Ejemplar_EjemplarId` | `Ejemplar` | un ejemplar se presta N veces |
+
+Las únicas llaves foráneas que apuntan a `Usuario` son `Sesion`, `TokenActivacion` y
+`CodigoRecuperacion`: **las tres son del Core**. Ninguna tabla del módulo de negocio
+apunta al Core (RD-03). Para comprobarlo:
+
+```sql
+SELECT name FROM sys.indexes WHERE is_unique = 1 AND name = 'UQ_Socio_UsuarioId';
+```
+
+Devuelve una fila. El índice es **único y sin llave foránea**: un usuario del Core es como
+mucho un socio, y la unicidad la impone la base sin atar este esquema al del Core.
 
 ### 6.3 El estado se guarda como texto legible
 
@@ -312,6 +341,18 @@ SELECT name, filter_definition FROM sys.indexes WHERE name = 'UX_Prestamo_Ejempl
 
 El índice es único y filtrado a los estados `Solicitado` y `Activo`. Es la base de la
 disponibilidad: un mismo ejemplar no puede estar prestado dos veces a la vez.
+
+Por eso **`Ejemplar` no tiene columna «Disponible»**: la disponibilidad se deriva de los
+préstamos vivos. Una bandera mantenida a mano son dos verdades que se desincronizan
+en cuanto una actualización falla a mitad; derivada, hay una sola.
+
+```powershell
+dotnet test tests/Biblioteca.Biblioteca.Tests --filter "FullyQualifiedName~RelacionesDelModelo"
+```
+
+Las 13 pruebas de `RelacionesDelModeloTests` verifican las tres relaciones, que
+`Socio.UsuarioId` es único sin llave foránea, que `Ejemplar` no tiene columna de
+disponibilidad y que `UX_Prestamo_EjemplarVivo` sigue siendo único y filtrado.
 
 ### 6.7 El estado del préstamo sólo puede ser uno de los cinco
 
@@ -494,7 +535,8 @@ nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 | **RF-NOT-12** — sin envíos duplicados | `SmtpEntregador.EntregarAsync` (reclamo condicional) |
 | RF-NOT-13 — credenciales SMTP del entorno | `OpcionesCorreo` + `appsettings.json` (sólo nombres) |
 | **RF-NEG-03/04/05** — máquina de estados | `docs/maquina-de-estados.md` + `src/Biblioteca.Biblioteca/Prestamos/` |
-| RD-03 — el Core no depende del negocio | Sección 4 de este README |
+| RF-NEG-01 — las relaciones existen en el modelo de datos, no sólo en el diagrama | `BibliotecaDbContext.cs` + `tests/Biblioteca.Biblioteca.Tests/RelacionesDelModeloTests.cs` |
+| RD-03 — el Core no depende del negocio | Sección 4 de este README; §6.2 lo comprueba también en el modelo de datos |
 | RD-07 — validación de entrada | `PoliticaDeContrasenas`, `EncolaCorreo` |
 | RD-08 — errores sin filtrar | `ManejadorDeExcepciones` |
 | RD-10 — sin secretos versionados | `.gitignore`, `.env.example`, `appsettings.json` |
@@ -546,6 +588,6 @@ dotnet test Biblioteca.sln
 |---|---:|---|
 | `Biblioteca.Nucleo.Tests` | 9 | Tipos de error, contrato de auditoría |
 | `Biblioteca.Identidad.Tests` | 44 | Política de operaciones (RF-CA-05), guard de arranque, contraseñas (RF-CA-14), generación de tokens |
-| `Biblioteca.Biblioteca.Tests` | 19 | Estructura de la máquina de estados (RF-NEG-03/04/05) |
+| `Biblioteca.Biblioteca.Tests` | 32 | Estructura de la máquina de estados (RF-NEG-03/04/05) y relaciones del modelo de datos (RF-NEG-01, RD-03) |
 | `Biblioteca.Api.Tests` | 7 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales |
-| **Total** | **79** | |
+| **Total** | **92** | |

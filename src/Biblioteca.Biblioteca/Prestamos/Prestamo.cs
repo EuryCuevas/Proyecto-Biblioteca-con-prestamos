@@ -1,3 +1,6 @@
+using Biblioteca.Biblioteca.Catalogo;
+using Biblioteca.Biblioteca.Socios;
+
 namespace Biblioteca.Biblioteca.Prestamos;
 
 /// <summary>
@@ -15,8 +18,12 @@ public sealed class Prestamo
     /// <summary>Socio que solicita el préstamo.</summary>
     public Guid SocioId { get; set; }
 
+    public Socio? Socio { get; set; }
+
     /// <summary>Ejemplar concreto que se presta (copia física).</summary>
     public Guid EjemplarId { get; set; }
+
+    public Ejemplar? Ejemplar { get; set; }
 
     /// <summary>Estado actual, regido por <see cref="TransicionesPrestamo"/>.</summary>
     public EstadoPrestamo Estado { get; set; } = EstadosPrestamo.Inicial;
