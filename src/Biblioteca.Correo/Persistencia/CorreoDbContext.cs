@@ -1,4 +1,5 @@
 using Biblioteca.Correo.Entidades;
+using Biblioteca.Nucleo.Notificacion;
 using Microsoft.EntityFrameworkCore;
 
 namespace Biblioteca.Correo.Persistencia;
