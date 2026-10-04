@@ -333,17 +333,41 @@ Todas `datetime2`. Los valores se escriben en UTC y se convierten al presentarlo
 
 ### 6.9 No hay secretos en el repositorio
 
-```powershell
-git grep -n -I -E "SMTP_PASS|Contrasena=[^;]*;|password=[^;]*;" -- . ':!docs'
-```
-
-Sin resultados. Y:
+**Comprobación 1 — la cadena de conexión no está en ningún archivo versionado:**
 
 ```powershell
-git ls-files | Select-String -Pattern "^\.env$|appsettings.Local.json"
+git grep -n "Server=" -- src
 ```
 
-Sin resultados: esos archivos están en `.gitignore` y nunca se versionan (RD-10).
+Sin resultados. La cadena de conexión sólo existe en la variable de entorno
+`ConnectionStrings__Biblioteca`.
+
+**Comprobación 2 — `appsettings.json` sólo contiene claves, no valores:**
+
+```powershell
+Get-Content src/Biblioteca.Api/appsettings.json | Select-String "Server="
+```
+
+Sin resultados. Cada clave sensible aparece como comentario con el nombre de su variable
+de entorno, nunca con su valor.
+
+**Comprobación 3 — los archivos de secretos no están versionados:**
+
+```powershell
+git ls-files | Select-String -Pattern "\.env$|appsettings\.Local\.json|\.pfx$|\.key$"
+```
+
+Sin resultados: esos patrones están en `.gitignore` y nunca se versionan (RD-10).
+
+**Comprobación 4 — `.env.example` sólo documenta nombres:**
+
+```powershell
+Get-Content .env.example
+```
+
+Los valores de `Correo__Usuario`, `Correo__Contrasena` y `Correo__Remitente` aparecen
+**vacíos**. El de `ConnectionStrings__Biblioteca` aparece con la configuración de
+desarrollo, que no contiene contraseña porque usa autenticación de Windows.
 
 ### 6.10 La exigencia de rol de cada operación está en un solo punto (RF-CA-05)
 
