@@ -172,8 +172,8 @@ Estos valores **no son secretos** y viven en `appsettings.json`:
 Biblioteca.sln
 
 src/
-  Biblioteca.Nucleo/          Transversal: errores tipados, puerto de auditoría, configuración
-  Biblioteca.Identidad/       PIEZA 1 del Core. Usuario, sesión, roles, política de contraseñas
+  Biblioteca.Nucleo/          Transversal: errores tipados, puertos (auditoría, correo), configuración
+  Biblioteca.Identidad/       PIEZA 1 del Core. Usuario, sesión, roles, registro, contraseñas
   Biblioteca.Correo/          Cola de correo y entrega SMTP
   Biblioteca.Biblioteca/      MÓDULO DE NEGOCIO. Catálogo, socios, préstamos y sus relaciones
   Biblioteca.Api/             Host HTTP. Configuración, DI, migraciones, traducción de errores
@@ -185,7 +185,7 @@ tests/
   Biblioteca.Nucleo.Tests/      Contratos del núcleo transversal
   Biblioteca.Identidad.Tests/   Política de operaciones, guard de arranque, contraseñas, tokens
   Biblioteca.Biblioteca.Tests/  Máquina de estados del negocio y relaciones del modelo de datos
-  Biblioteca.Api.Tests/         Arranque real contra SQL Server
+  Biblioteca.Api.Tests/         Arranque real contra SQL Server y flujos de extremo a extremo
 
 docs/
   diseno-de-componentes.md    Documento de diseño de componentes (semana 2)
@@ -201,8 +201,23 @@ El **Core no depende del módulo de negocio** (RD-03). Ningún archivo del Core 
 Select-String -Path "src\Biblioteca.Nucleo\**\*.cs","src\Biblioteca.Identidad\**\*.cs","src\Biblioteca.Correo\**\*.cs" -Pattern "Biblioteca\.Biblioteca"
 ```
 
-Sin resultados. Lo mismo para el sentido inverso: `Biblioteca.Correo` no menciona
-`Biblioteca.Identidad`; la dependencia va contra la interfaz `IEncolaCorreo`.
+Sin resultados.
+
+**Ninguna pieza referencia a otra pieza.** Se comprueba en los dos sentidos:
+
+```powershell
+Select-String -Path "src\Biblioteca.Identidad\**\*.cs" -Pattern "Biblioteca\.Correo"
+Select-String -Path "src\Biblioteca.Correo\**\*.cs" -Pattern "Biblioteca\.Identidad"
+Select-String -Path "src\Biblioteca.Correo\**\*.cs","src\Biblioteca.Identidad\**\*.cs" -Pattern "Biblioteca\.Biblioteca"
+```
+
+Sin resultados en ninguno de los tres.
+
+Para que `Identidad` pueda encolar un correo sin referenciar la pieza que lo entrega, el
+**puerto vive en el Core**: `Biblioteca.Nucleo/Notificacion/IEncolaCorreo.cs`. La pieza
+`Correo` lo implementa (`EncolaCorreo`); `Identidad` sólo lo consume. Es el mismo patrón
+que el puerto de auditoría `IPublicaAuditoria`. Referenciar `Biblioteca.Correo` desde
+`Biblioteca.Identidad` habría acoplado la pieza 1 al detalle de SMTP.
 
 ---
 
@@ -432,7 +447,94 @@ declarada impide que la aplicación arranque):
 dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~GuardDeOperaciones"
 ```
 
-### 6.11 La máquina de estados del negocio es correcta (RF-NEG-03/04/05)
+### 6.11 Registrar y activar una cuenta, de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17)
+
+Los seis criterios se comprueba con la misma secuencia, que es exactamente lo que hace el
+enunciado: registrar con un correo propio, abrir el enlace recibido y comprobar que la
+cuenta pasa a estar activa.
+
+```powershell
+$base   = "http://localhost:5XXX"
+$correo = "yo@ejemplo.com"
+$cuerpo = @{ nombre = "Yo Mismo"; correo = $correo; contrasena = "Biblioteca2026" } | ConvertTo-Json
+
+# 1. Registrar la cuenta.
+Invoke-RestMethod "$base/usuarios/registro" -Method Post -ContentType "application/json" -Body $cuerpo
+# Respuesta: 202  {"mensaje":"Cuenta registrada. Revisa tu correo para activarla."}
+```
+
+```sql
+-- La cuenta existe pero está INACTIVA (RF-CA-15) y la contraseña NO está en claro (RF-CA-02).
+SELECT Correo, Activo, PasswordHash
+FROM Usuario WHERE Correo = 'yo@ejemplo.com';
+-- Activo = 0. PasswordHash no contiene 'Biblioteca2026'.
+-- Dos usuarios con la misma contraseña tienen PasswordHash DISTINTO: eso es la sal por usuario.
+
+-- El correo quedó encolado, con el enlace (RF-NOT-08).
+SELECT Destinatario, Estado, Cuerpo
+FROM CorreoEnCola WHERE Destinatario = 'yo@ejemplo.com';
+-- Estado = Pendiente. En Cuerpo aparece: http://localhost:5XXX/usuarios/activar?token=...
+```
+
+```powershell
+# 2. Abrir el enlace: copiar el token del paso anterior (RF-CA-16).
+Invoke-RestMethod "$base/usuarios/activar?token=<TOKEN>"
+# Respuesta: 200  {"mensaje":"Cuenta activada. Ya puedes iniciar sesión."}
+# SELECT Activo FROM Usuario WHERE Correo = 'yo@ejemplo.com';  ->  1
+
+# 3. El enlace NO sirve una segunda vez, y el estado NO cambia (RF-CA-16).
+Invoke-RestMethod "$base/usuarios/activar?token=<TOKEN>"
+# Respuesta: 422  {"title":"El enlace ya se usó o ha vencido. Pide uno nuevo."}
+# Activo sigue en 1: un rechazo no desactiva lo que ya estaba activo.
+
+# 4. Un token inventado se rechaza igual (404) que uno caducado: no se puede
+#    deducir qué enlaces existieron (RF-CA-16).
+Invoke-RestMethod "$base/usuarios/activar?token=inventado"
+```
+
+```powershell
+# 5. El correo es único (RF-CA-01). Segundo registro con el mismo correo -> 409.
+Invoke-RestMethod "$base/usuarios/registro" -Method Post -ContentType "application/json" -Body $cuerpo
+
+# El mismo correo con MAYÚSCULAS también es el mismo correo -> 409:
+Invoke-RestMethod "$base/usuarios/registro" -Method Post -ContentType "application/json" `
+  -Body (@{ nombre = "Otro"; correo = "YO@EJEMPLO.COM"; contrasena = "Biblioteca2026" } | ConvertTo-Json)
+
+# 6. La política de contraseña (RF-CA-14) se rechaza con 400 y su motivo, y NO deja
+#    usuario a medias. Las tres formas de incumplirla:
+#    "solosletras"  -> 400 "La contraseña debe combinar letras y números."
+#    "12345678"     -> 400 "La contraseña debe combinar letras y números."
+#    "corta1"       -> 400 "La contraseña debe tener al menos 8 caracteres."
+Invoke-RestMethod "$base/usuarios/registro" -Method Post -ContentType "application/json" `
+  -Body (@{ nombre = "Yo"; correo = "otro@ejemplo.com"; contrasena = "solosletras" } | ConvertTo-Json)
+
+# 7. Un correo mal formado se rechaza con 400, no con un error de servidor (RD-07).
+Invoke-RestMethod "$base/usuarios/registro" -Method Post -ContentType "application/json" `
+  -Body (@{ nombre = "Yo"; correo = "no-es-un-correo"; contrasena = "Biblioteca2026" } | ConvertTo-Json)
+```
+
+```powershell
+# 8. El reenvío NO revela qué correos están registrados (RF-CA-17).
+#    Registra primero otro usuario sin activar para tener los dos casos.
+$reenvio = { param($c) Invoke-RestMethod "$base/usuarios/reenviar-activacion" `
+               -Method Post -ContentType "application/json" -Body (@{ correo = $c } | ConvertTo-Json) }
+
+& $reenvio "yo@ejemplo.com"          # -> 202, cuerpo: "Si el correo está registrado y la cuenta
+& $reenvio "nadie@ejemplo.com"       # -> 202, cuerpo: INACCIÓN, y la cuenta queda inactiva...
+```
+
+Los dos `202` devuelven **el mismo cuerpo, byte a byte**, y en ambos casos se encola un
+correo nuevo. Además, el reenvío **invalida el enlace anterior**: el token viejo pasa a
+`UsadoEn` y ya no activa nada (→ `422`).
+
+```powershell
+# 9. Todo lo anterior, automáticamente:
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~RegistroYActivacion"
+# 19 pruebas. No simulan nada: hablan HTTP contra la aplicación real y comprueban lo que
+# queda en Usuario, en TokenActivacion y en CorreoEnCola.
+```
+
+### 6.12 La máquina de estados del negocio es correcta (RF-NEG-03/04/05)
 
 ```powershell
 dotnet test tests/Biblioteca.Biblioteca.Tests
@@ -443,13 +545,13 @@ prohibidas y que ninguna transición esté a la vez permitida y prohibida.
 
 La tabla completa, con el diagrama, está en [`docs/maquina-de-estados.md`](docs/maquina-de-estados.md).
 
-### 6.12 Registrar un usuario funciona con el SMTP apagado (RF-NOT-08)
+### 6.13 Registrar un usuario funciona con el SMTP apagado (RF-NOT-08)
 
 **Ésta es la prueba clave de la cola de correo.**
 
 1. **Apaga el acceso al servidor SMTP**: deja `Correo__Host` vacío, o pon una contraseña
    deliberadamente incorrecta.
-2. Registra un usuario.
+2. Registra un usuario con `POST /usuarios/registro` (ver §6.11).
 3. El registro **debe funcionar**.
 4. Comprueba que el correo quedó encolado, no enviado:
 
@@ -460,7 +562,7 @@ FROM CorreoEnCola ORDER BY CreadoEn DESC;
 
 `Estado` debe ser `Pendiente` y `FechaEnvio` debe ser `NULL`.
 
-### 6.13 El emisor de correo es un proceso aparte (RF-NOT-09)
+### 6.14 El emisor de correo es un proceso aparte (RF-NOT-09)
 
 ```powershell
 dotnet run --project tools/Biblioteca.Correo.Enviador
@@ -474,7 +576,7 @@ info     Correo <guid> entregado.
 info     Proceso terminado. Enviados: 1. Con fallo: 0
 ```
 
-### 6.14 Ejecutar el emisor dos veces no duplica correos (RF-NOT-12)
+### 6.15 Ejecutar el emisor dos veces no duplica correos (RF-NOT-12)
 
 ```powershell
 dotnet run --project tools/Biblioteca.Correo.Enviador
@@ -494,7 +596,7 @@ SELECT Estado, COUNT(*) FROM CorreoEnCola GROUP BY Estado;
 
 Un correo enviado **no** aparece como `Pendiente` en la segunda ejecución.
 
-### 6.15 El emisor se puede ejecutar sin que el proceso que encoló siga vivo
+### 6.16 El emisor se puede ejecutar sin que el proceso que encoló siga vivo
 
 1. Registra un usuario con el SMTP apagado. El correo queda `Pendiente`.
 2. Cierra la API por completo.
@@ -504,7 +606,7 @@ Un correo enviado **no** aparece como `Pendiente` en la segunda ejecución.
 El correo se envía. **Esto es lo que prueba RF-NOT-09**: el envío no depende del flujo
 que creó el correo.
 
-### 6.16 Los fallos internos no se filtran (RD-08)
+### 6.17 Los fallos internos no se filtran (RD-08)
 
 ```powershell
 Invoke-RestMethod http://localhost:5XXX/usuarios -Headers @{ Authorization = "Bearer token-invalido" } -ErrorAction SilentlyContinue
@@ -523,14 +625,19 @@ nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 |---|---|
 | **RF-CA-05** — un solo punto de exigencia de rol | `src/Biblioteca.Identidad/PoliticaDeOperaciones.cs` |
 | RF-CA-05 — que no se pueda saltar | `src/Biblioteca.Api/Seguridad/ValidarOperacionesDeclaradasConvention.cs` |
-| RF-CA-02 — hash con sal por usuario | `PasswordHasher<Usuario>` (decisión en `docs/diseno-de-componentes.md`, §4.5) |
+| RF-CA-02 — hash con sal por usuario | `PasswordHasher<Usuario>`, inyectado en `ServicioDeRegistro` (decisión en `docs/diseno-de-componentes.md`, §4.5) |
 | RF-CA-14 — política de contraseñas | `src/Biblioteca.Identidad/Password/PoliticaDeContrasenas.cs` |
 | RF-CA-01 — correo único | Índice `UQ_Usuario_Correo`, aplicado en `IdentidadDbContext.cs` |
+| RF-CA-01 — el rechazo, no sólo el índice | `ServicioDeRegistro.RegistrarAsync` (comprobación previa + traducción de la carrera del índice) |
+| **RF-CA-15** — la cuenta nace inactiva | `ServicioDeRegistro.RegistrarAsync` (`Activo = false`) |
+| **RF-CA-16** — enlace de un solo uso | `TokenActivacion.EstaVigente` + `ServicioDeRegistro.ActivarAsync` |
+| **RF-CA-17** — reenvío sin revelar correos | `ServicioDeRegistro.ReenviarActivacionAsync` |
+| **RF-CA-01/02/14/15/16/17** — las tres acciones | `src/Biblioteca.Api/Controllers/UsuariosController.cs` |
+| **RF-CA-01/02/14/15/16/17** — comprobación automática | `tests/Biblioteca.Api.Tests/RegistroYActivacionTests.cs` (19 pruebas) |
 | RF-CA-12 / 18 / 20 — revocación | `ServicioDeSesiones.CerrarTodasAsync` |
-| RF-CA-15 / 16 — token de activación | `TokenActivacion` + `GeneradorDeSecretos` |
 | RF-CA-10 — código de recuperación | `CodigoRecuperacion` |
 | RF-CA-19 — bloqueo tras 5 intentos | `Usuario.IntentosFallidos` + `Usuario.BloqueadoHasta` |
-| **RF-NOT-08** — encolar, no enviar | `EncolaCorreo` + puerto `IEncolaCorreo` |
+| **RF-NOT-08** — encolar, no enviar | `EncolaCorreo` + puerto `IEncolaCorreo` (que vive en el Core, §4) |
 | **RF-NOT-09** — envío en proceso aparte | `tools/Biblioteca.Correo.Enviador` |
 | **RF-NOT-12** — sin envíos duplicados | `SmtpEntregador.EntregarAsync` (reclamo condicional) |
 | RF-NOT-13 — credenciales SMTP del entorno | `OpcionesCorreo` + `appsettings.json` (sólo nombres) |
@@ -562,7 +669,7 @@ Para que quede claro que es alcance, y no omisión:
 | Auditoría persistente (RF-AUD-*) | Semana 14, pieza 6 |
 | Registros de auditoría de RF-CA-08, RF-CA-13 y RF-CA-20 | Semana 14, pieza 6 |
 | Prueba completa de la máquina de estados del negocio | Semana 8. Aquí sólo la estructura |
-| Gestión de permisos (RF-CA-16 del Core, pieza 2) | Semanas 6-8 |
+| Gestión de permisos de documentos (RF-CA-16 *del Core*, pieza 2 — no confundir con el enlace de un solo uso de esta práctica) | Semanas 6-8 |
 | Manejador de documentos (RF-DOC-*) | Semana 9 |
 | Notificaciones al usuario y plantillas de correo (RF-NOT-01..07) | Semanas 7-8 |
 | Reportes (RF-REP-*) | Semana 12 |
@@ -573,10 +680,19 @@ Para que quede claro que es alcance, y no omisión:
 | Método | Ruta | Autenticación | Propósito |
 |---|---|---|---|
 | `GET` | `/salud` | Ninguna | Comprobación de vida del servicio |
+| `POST` | `/usuarios/registro` | Ninguna | Alta de cuenta; queda inactiva hasta abrir el enlace |
+| `GET` | `/usuarios/activar?token=…` | Ninguna | Apertura del enlace de un solo uso |
+| `POST` | `/usuarios/reenviar-activacion` | Ninguna | Reenvío del enlace, sin revelar qué correos existen |
 
-Los endpoints de la pieza 1 (registro, activación, inicio de sesión, cambio de contraseña,
-recuperación, administración de usuarios) llegan en los siguientes *pull requests*. Cada
-uno se documentará aquí con su criterio de aceptación, en la sección 6.
+Las tres acciones de registro son públicas a propósito: todavía no hay identidad que
+exigir. Es el mismo tratamiento que recibe `/salud` en el guard de arranque
+(`ValidarOperacionesDeclaradasConvention` exceptúa las acciones `[AllowAnonymous]`), y no
+es una excepción a RF-CA-05 sino su caso honesto. Todas las demás acciones del sistema
+siguen declarando su operación.
+
+El resto de los endpoints de la pieza 1 (inicio de sesión, cambio de contraseña,
+recuperación, administración de usuarios) llega en los siguientes *pull requests*. Cada
+uno se documenta aquí con su criterio de aceptación, en la sección 6.
 
 ### Pruebas
 
@@ -589,5 +705,5 @@ dotnet test Biblioteca.sln
 | `Biblioteca.Nucleo.Tests` | 9 | Tipos de error, contrato de auditoría |
 | `Biblioteca.Identidad.Tests` | 44 | Política de operaciones (RF-CA-05), guard de arranque, contraseñas (RF-CA-14), generación de tokens |
 | `Biblioteca.Biblioteca.Tests` | 32 | Estructura de la máquina de estados (RF-NEG-03/04/05) y relaciones del modelo de datos (RF-NEG-01, RD-03) |
-| `Biblioteca.Api.Tests` | 7 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales |
-| **Total** | **92** | |
+| `Biblioteca.Api.Tests` | 26 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, y registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17) |
+| **Total** | **111** | |
