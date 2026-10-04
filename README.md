@@ -1,6 +1,3 @@
-Esta es la version editada por la rama B
-Esta es la version editada por la rama A
-
 # BibliotecaCore
 
 Proyecto final de Programación III (ITLA, 2026-C-3): un Core compartido, más el módulo de negocio propio, Biblioteca con préstamos.
