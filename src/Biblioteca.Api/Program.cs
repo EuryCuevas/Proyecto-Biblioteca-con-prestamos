@@ -130,10 +130,22 @@ builder.Services.AddControllers(opciones =>
 {
     // Si alguna acción no declara [RequiereOperacion], la aplicación no arranca (RF-CA-05).
     opciones.Conventions.Add(new ValidarOperacionesDeclaradasConvention());
-});
-
-builder.Services.ConfigureHttpJsonOptions(opciones =>
-    opciones.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+})
+// Los enums van y vuelven como texto en TODA la API: sale "rol": "Estandar" y acepta
+// {"rol": "Administrador"}.
+//
+// La línea que estaba aquí era ConfigureHttpJsonOptions(...), y no hacía nada. Esa
+// llamada configura el serializador de las APIs mínimas y de HttpResponse.Json, no el de
+// los controladores; como todas las respuestas de esta API salen de controladores, el
+// efecto era cero. Peor: daba la impresión de que el problema estaba resuelto, porque
+// el mismo repository tenía las dos cosas —
+//   - SesionController proyectando el rol a texto a mano (.ToString()), de modo que
+//     /sesion/iniciar y /sesion/yo sí parecían tratarlo bien, y
+//   - el listado y el cambio de rol hablando con el enum crudo, que salía como 0 y
+//     rechazaba "Administrador" con un 400.
+// DosEndpoints que usan el mismo enum de dos maneras distintas.
+.AddJsonOptions(opciones =>
+    opciones.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 var app = builder.Build();
 
