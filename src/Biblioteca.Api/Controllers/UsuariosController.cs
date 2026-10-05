@@ -1,15 +1,18 @@
+using System.Security.Claims;
 using Biblioteca.Identidad;
+using Biblioteca.Identidad.Administracion;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Registro;
+using Biblioteca.Nucleo.Errores;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Biblioteca.Api.Controllers;
 
 /// <summary>
-/// Alta de cuentas y activación por enlace, y el restablecimiento forzado de
-/// contraseña que puede pedir un Administrador.
+/// Alta de cuentas y activación por enlace, y la administración de usuarios: listado,
+/// cambio de rol, desactivación, reactivación y restablecimiento forzado de contraseña.
 /// </summary>
 /// <remarks>
 /// Las tres primeras acciones son <c>[AllowAnonymous]</c>: todavía no hay usuario ni sesión. No es
@@ -17,12 +20,17 @@ namespace Biblioteca.Api.Controllers;
 /// identidad no puede exigir un rol. La convención
 /// <c>ValidarOperacionesDeclaradasConvention</c> exceptúa justamente las acciones
 /// anónimas, y el resto del sistema sigue declarando su operación.
+///
+/// A partir de <c>GET /usuarios</c>, todas las acciones declaran una operación que
+/// <c>PoliticaDeOperaciones</c> reserva al Administrador, y todas se evalúan en cada
+/// petición (RF-CA-06, RD-06).
 /// </remarks>
 [ApiController]
 [Route("usuarios")]
 public sealed class UsuariosController(
     IServicioDeRegistro registro,
-    IServicioDeContrasenas contrasenas) : ControllerBase
+    IServicioDeContrasenas contrasenas,
+    IServicioDeAdministracion administracion) : ControllerBase
 {
     /// <summary>
     /// Registra una cuenta (RF-CA-01, RF-CA-02, RF-CA-14, RF-CA-15).
@@ -126,6 +134,146 @@ public sealed class UsuariosController(
     }
 
     /// <summary>
+    /// Lista los usuarios con su rol y su estado (RF-CA-21).
+    ///
+    /// Nunca incluye hashes ni tokens: la proyección es a
+    /// <see cref="ResumenDeUsuario"/>, que no tiene ningún campo de ese tipo, y la
+    /// proyección ocurre en SQL, de modo que <c>PasswordHash</c> ni siquiera llega a
+    /// salir de la base.
+    /// </summary>
+    /// <remarks>
+    /// La operación es <c>UsuariosListar</c>, que <c>PoliticaDeOperaciones</c> reserva al
+    /// Administrador (RF-CA-05). Un Estándar recibe 403, y también si construye la
+    /// petición a mano sin pasar por la interfaz (RF-CA-06, RD-06).
+    /// </remarks>
+    [HttpGet]
+    [RequiereOperacion(Operaciones.UsuariosListar)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> Listar(CancellationToken cancelacion)
+    {
+        var usuarios = await administracion.ListarAsync(cancelacion);
+
+        return Ok(usuarios);
+    }
+
+    /// <summary>
+    /// Cambia el rol de un usuario (RF-CA-08).
+    ///
+    /// Sustituye el rol anterior por el nuevo: todo usuario tiene exactamente uno
+    /// (RF-CA-04). Cierra las sesiones abiertas de ese usuario, porque el rol viaja
+    /// dentro de la credencial y una credencial emitida con el rol viejo no se
+    /// actualiza sola.
+    /// </summary>
+    /// <remarks>
+    /// El criterio dice que un Estándar no puede cambiar ningún rol, ni el propio; los
+    /// dos casos llegan aquí y los dos se rechazan antes de ejecutar nada, en la misma
+    /// comprobación que rechaza cualquier otra operación de Administrador. No hace
+    /// falta una regla especial para "el propio": la misma los cubre (RF-CA-06).
+    ///
+    /// Lo que el criterio NO dice —y por eso no se ha inventado— es que un
+    /// Administrador no pueda cambiarse el rol a sí mismo. A diferencia de RF-CA-20,
+    /// que prohíbe explícitamente la autodesactivación, aquí no hay tal prohibición: un
+    /// Administrador puede degradarse a Estándar, y le pasa lo mismo que a cualquier
+    /// otro cambio de rol, incluidas las sesiones abiertas que se le cierran.
+    /// </remarks>
+    [HttpPost("cambiar-rol")]
+    [RequiereOperacion(Operaciones.UsuariosCambiarRol)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> CambiarRol(
+        [FromBody] SolicitudCambioDeRol peticion,
+        CancellationToken cancelacion)
+    {
+        // El rol llega como texto y se traduce aquí, porque traducir HTTP es lo único
+        // que hace el host (RD-02). Si el nombre no existe en el enum se rechaza con
+        // 422 y el motivo de la pieza, no con el 400 de la deserialización: un 400 de
+        // esos llega acompañado de «The peticion field is required», porque el cuerpo
+        // entero queda sin enlazar, y ese mensaje no dice nada de un rol inexistente.
+        //
+        // La línea que separa los dos códigos es deliberada: 400 es «el cuerpo no tiene
+        // la forma que la API documenta» —un número, o un campo que falta— y 422 es «la
+        // forma es correcta y aun así no se puede atender». Un 7 no es un rol escrito
+        // de otra manera, es otra cosa.
+        if (!Enum.TryParse<Rol>(peticion.Rol, out var nuevoRol))
+        {
+            throw ExcepcionDominio.ReglaDeNegocio(
+                "usuario.rol_invalido", "El rol indicado no existe.");
+        }
+
+        var resultado = await administracion.CambiarRolAsync(
+            peticion.UsuarioId, nuevoRol, cancelacion);
+
+        return Ok(resultado);
+    }
+
+    /// <summary>
+    /// Desactiva un usuario y le cierra las sesiones abiertas (RF-CA-20).
+    ///
+    /// Desde ese momento no puede iniciar sesión, y sus credenciales existentes dejan
+    /// de servir. Un Administrador no puede desactivar su propia cuenta: se rechaza con
+    /// 422.
+    /// </summary>
+    /// <remarks>
+    /// La condición se comprueba en el servicio, no aquí. Un endpoint que se
+    /// autocomprobara dejaría de ser el sitio donde se lee qué puede hacer cada
+    /// operación, que es lo que RF-CA-05 exige que haya uno solo.
+    /// </remarks>
+    [HttpPost("desactivar")]
+    [RequiereOperacion(Operaciones.UsuariosDesactivar)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> Desactivar(
+        [FromBody] SolicitudDeEstado peticion,
+        CancellationToken cancelacion)
+    {
+        var resultado = await administracion.DesactivarAsync(
+            peticion.UsuarioId, UsuarioActual(), cancelacion);
+
+        return Ok(resultado);
+    }
+
+    /// <summary>
+    /// Reactiva un usuario desactivado (RF-CA-20).
+    ///
+    /// Vuelve a poder iniciar sesión. No le devuelve las sesiones que tenía, que se
+    /// cerraron al desactivarlo, ni le levanta el bloqueo por cinco intentos fallidos:
+    /// eso expira solo.
+    /// </summary>
+    [HttpPost("reactivar")]
+    [RequiereOperacion(Operaciones.UsuariosReactivar)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> Reactivar(
+        [FromBody] SolicitudDeEstado peticion,
+        CancellationToken cancelacion)
+    {
+        var resultado = await administracion.ReactivarAsync(peticion.UsuarioId, cancelacion);
+
+        return Ok(resultado);
+    }
+
+    /// <summary>
+/// Identificador del usuario autenticado.
+///
+/// Sale del claim que escribió <c>AutenticacionPorSesion</c> al resolver la
+/// credencial, y no de un parámetro de la petición. Si el identificador de usuario
+/// pudiera venir en el cuerpo, la comprobación de autodesactivación sería el único
+/// sitio del sistema que depende de un dato que elige el cliente.
+/// </summary>
+private Guid UsuarioActual() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+
+    /// <summary>
     /// Base pública donde vive el enlace del correo. La decide el host porque es quien
     /// conoce el esquema, el host y el puerto reales de esta petición.
     /// </summary>
@@ -140,3 +288,21 @@ public sealed record SolicitudReenvio(string Correo);
 
 /// <summary>Cuerpo de <c>POST /usuarios/restablecer-contrasena</c>.</summary>
 public sealed record SolicitudRestablecimientoAdmin(Guid UsuarioId);
+
+/// <summary>
+/// Cuerpo de <c>POST /usuarios/cambiar-rol</c>.
+///
+/// El rol llega como texto y lo traduce la acción, no el enlazador de modelos. Es una
+/// decisión con coste —se pierde la comprobación de forma que da el enum— y está
+/// comprada: <c>{"rol": "Superusuario"}</c> con el enum en la firma produce un 400 de
+/// deserialización cuyo único texto útil es «no se pudo convertir», y además dice que
+/// falta el cuerpo entero. Con el texto en la entrada, ese caso es un 422 con el mismo
+/// motivo que un número fuera de rango (RF-CA-04).
+/// </summary>
+public sealed record SolicitudCambioDeRol(Guid UsuarioId, string Rol);
+
+/// <summary>
+/// Cuerpo de <c>POST /usuarios/desactivar</c> y de <c>POST /usuarios/reactivar</c>.
+/// El mismo para los dos, porque los dos cambian lo mismo: si la cuenta está activa.
+/// </summary>
+public sealed record SolicitudDeEstado(Guid UsuarioId);

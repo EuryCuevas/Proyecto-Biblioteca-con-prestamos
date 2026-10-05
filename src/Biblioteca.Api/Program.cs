@@ -7,6 +7,7 @@ using Biblioteca.Correo.Persistencia;
 using Biblioteca.Nucleo.Notificacion;
 using Biblioteca.Identidad;
 using Biblioteca.Identidad.Acceso;
+using Biblioteca.Identidad.Administracion;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Entidades;
@@ -78,6 +79,13 @@ builder.Services.AddScoped<IServicioDeAcceso, ServicioDeAcceso>();
 // (RF-CA-09, RF-CA-10).
 builder.Services.AddScoped<IServicioDeContrasenas, ServicioDeContrasenas>();
 
+// Administración de usuarios: listado, cambio de rol y activación/desactivación. Va
+// aparte de las otras cuatro piezas porque es la única que trata a un usuario sobre
+// los demás en lugar de sobre sí mismo, y porque su exigencia de rol es distinta: las
+// cuatro anteriores admiten Estándar y Administrador, y ésta sólo Administrador
+// (RF-CA-04, RF-CA-06, RF-CA-08, RF-CA-20, RF-CA-21).
+builder.Services.AddScoped<IServicioDeAdministracion, ServicioDeAdministracion>();
+
 // El hash de contraseña se inyecta, no se instancia dentro del servicio, para que las
 // pruebas puedan sustituirlo por uno rápido. El algoritmo por defecto es PBKDF2 con sal
 // propia del usuario: es el que garantiza RF-CA-02 sin que escribamos criptografía a mano.
@@ -122,10 +130,22 @@ builder.Services.AddControllers(opciones =>
 {
     // Si alguna acción no declara [RequiereOperacion], la aplicación no arranca (RF-CA-05).
     opciones.Conventions.Add(new ValidarOperacionesDeclaradasConvention());
-});
-
-builder.Services.ConfigureHttpJsonOptions(opciones =>
-    opciones.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+})
+// Los enums van y vuelven como texto en TODA la API: sale "rol": "Estandar" y acepta
+// {"rol": "Administrador"}.
+//
+// La línea que estaba aquí era ConfigureHttpJsonOptions(...), y no hacía nada. Esa
+// llamada configura el serializador de las APIs mínimas y de HttpResponse.Json, no el de
+// los controladores; como todas las respuestas de esta API salen de controladores, el
+// efecto era cero. Peor: daba la impresión de que el problema estaba resuelto, porque
+// el mismo repository tenía las dos cosas —
+//   - SesionController proyectando el rol a texto a mano (.ToString()), de modo que
+//     /sesion/iniciar y /sesion/yo sí parecían tratarlo bien, y
+//   - el listado y el cambio de rol hablando con el enum crudo, que salía como 0 y
+//     rechazaba "Administrador" con un 400.
+// DosEndpoints que usan el mismo enum de dos maneras distintas.
+.AddJsonOptions(opciones =>
+    opciones.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 var app = builder.Build();
 
