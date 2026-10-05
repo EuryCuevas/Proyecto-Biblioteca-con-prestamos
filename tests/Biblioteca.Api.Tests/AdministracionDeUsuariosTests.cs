@@ -290,15 +290,53 @@ public class AdministracionDeUsuariosTests : IClassFixture<FabricaDeAplicacionDe
     [Fact]
     public async Task Cambiar_a_un_rol_que_no_existe_da_error_de_regla()
     {
-        var token = await TokenDeAdministradorAsync();
+        var cliente = Cliente(await TokenDeAdministradorAsync());
         var usuario = await CrearUsuarioAsync();
 
-        // Cuerpo escrito a mano porque PostAsJsonAsync no deja pasar un enum inválido.
-        var respuesta = await PeticionManualAsync(token, HttpMethod.Post, "/usuarios/cambiar-rol",
-            $$"""{"usuarioId":"{{usuario.Id}}","rol":7}""");
+        // Cuerpo bien formado que nombra un rol que no existe: 422 con el motivo de la
+        // pieza. Antes de que el campo fuera texto, esto devolvía el 400 de la
+        // deserialización, cuyo único texto útil era «no se pudo convertir» y que además
+        // decía que faltaba el cuerpo entero.
+        var respuesta = await cliente.PostAsJsonAsync("/usuarios/cambiar-rol", new
+        {
+            usuarioId = usuario.Id,
+            rol = "Superusuario"
+        });
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, respuesta.StatusCode);
+
+        using var cuerpo = JsonDocument.Parse(await respuesta.Content.ReadAsStringAsync());
+        Assert.Equal("usuario.rol_invalido", cuerpo.RootElement.GetProperty("codigo").GetString());
+
         Assert.Equal(Rol.Estandar, (await UsuarioAsync(usuario.Id)).Rol);
+    }
+
+    [Fact]
+    public async Task Un_rol_que_no_es_texto_se_rechaza_por_forma_con_400()
+    {
+        var token = await TokenDeAdministradorAsync();
+
+        // {"rol": 7} es un cuerpo mal formado: el campo es un nombre de rol, no un
+        // número. Por eso es 400 y no 422, y la línea que divide los dos casos es
+        // deliberada: 400 dice «el cuerpo no tiene la forma que la API documenta» y 422
+        // dice «la forma es correcta y aun así no se puede atender». Un 7 no es un rol
+        // escrito de otra manera, es otra cosa.
+        var respuesta = await PeticionManualAsync(token, HttpMethod.Post, "/usuarios/cambiar-rol",
+            $$"""{"usuarioId":"{{Guid.NewGuid()}}","rol":7}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, respuesta.StatusCode);
+    }
+
+    [Fact]
+    public async Task Un_cuerpo_sin_rol_se_rechaza_por_forma_con_400()
+    {
+        var token = await TokenDeAdministradorAsync();
+
+        // Falta un campo obligatorio, que es la otra mitad de «no tiene la forma».
+        var respuesta = await PeticionManualAsync(token, HttpMethod.Post, "/usuarios/cambiar-rol",
+            $$"""{"usuarioId":"{{Guid.NewGuid()}}"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, respuesta.StatusCode);
     }
 
     [Fact]

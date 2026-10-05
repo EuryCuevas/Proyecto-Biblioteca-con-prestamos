@@ -187,11 +187,13 @@ public sealed class ServicioDeAdministracion(
         Rol nuevoRol,
         CancellationToken cancelacion = default)
     {
-        // El model binding acepta cualquier entero en un enum si el tipo lo admite. Sin
-        // esta comprobación, un cuerpo {"rol": 7} crearía un usuario con un rol que
-        // no está en PoliticaDeOperaciones, y ese usuario no podría ejecutar nada sin
-        // que nadie entienda por qué. Se rechaza como regla de negocio, no como error
-        // de forma: la petición está bien formada, el valor no existe (RF-CA-04).
+        // Si el rol no es uno de los del enum, se rechaza como regla de negocio y no se
+        // toca nada. El endpoint ya traduce el texto y ha comprobado que el nombre
+        // existe, así que desde HTTP esto no se puede alcanzar: queda aquí porque
+        // decidir qué roles existen es de la pieza, no del host, y porque es la
+        // comprobación que protege a cualquier otro que llame a este servicio. Un
+        // usuario con un rol fuera de la tabla no podría ejecutar nada, y sin esto
+        // nadie entendería por qué (RF-CA-04).
         if (!Enum.IsDefined(nuevoRol))
         {
             throw ExcepcionDominio.ReglaDeNegocio(

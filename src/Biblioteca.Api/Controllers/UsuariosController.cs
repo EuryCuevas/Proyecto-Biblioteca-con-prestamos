@@ -4,6 +4,7 @@ using Biblioteca.Identidad.Administracion;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Registro;
+using Biblioteca.Nucleo.Errores;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -188,8 +189,24 @@ public sealed class UsuariosController(
         [FromBody] SolicitudCambioDeRol peticion,
         CancellationToken cancelacion)
     {
+        // El rol llega como texto y se traduce aquí, porque traducir HTTP es lo único
+        // que hace el host (RD-02). Si el nombre no existe en el enum se rechaza con
+        // 422 y el motivo de la pieza, no con el 400 de la deserialización: un 400 de
+        // esos llega acompañado de «The peticion field is required», porque el cuerpo
+        // entero queda sin enlazar, y ese mensaje no dice nada de un rol inexistente.
+        //
+        // La línea que separa los dos códigos es deliberada: 400 es «el cuerpo no tiene
+        // la forma que la API documenta» —un número, o un campo que falta— y 422 es «la
+        // forma es correcta y aun así no se puede atender». Un 7 no es un rol escrito
+        // de otra manera, es otra cosa.
+        if (!Enum.TryParse<Rol>(peticion.Rol, out var nuevoRol))
+        {
+            throw ExcepcionDominio.ReglaDeNegocio(
+                "usuario.rol_invalido", "El rol indicado no existe.");
+        }
+
         var resultado = await administracion.CambiarRolAsync(
-            peticion.UsuarioId, peticion.Rol, cancelacion);
+            peticion.UsuarioId, nuevoRol, cancelacion);
 
         return Ok(resultado);
     }
@@ -275,11 +292,14 @@ public sealed record SolicitudRestablecimientoAdmin(Guid UsuarioId);
 /// <summary>
 /// Cuerpo de <c>POST /usuarios/cambiar-rol</c>.
 ///
-/// El rol llega como texto porque la configuración de JSON serializa los enums como
-/// cadenas en toda la API, y un endpoint que aceptara <c>0</c> y <c>1</c> en el mismo
-/// sitio donde el resto acepta <c>"Administrador"</c> sería una incoherencia.
+/// El rol llega como texto y lo traduce la acción, no el enlazador de modelos. Es una
+/// decisión con coste —se pierde la comprobación de forma que da el enum— y está
+/// comprada: <c>{"rol": "Superusuario"}</c> con el enum en la firma produce un 400 de
+/// deserialización cuyo único texto útil es «no se pudo convertir», y además dice que
+/// falta el cuerpo entero. Con el texto en la entrada, ese caso es un 422 con el mismo
+/// motivo que un número fuera de rango (RF-CA-04).
 /// </summary>
-public sealed record SolicitudCambioDeRol(Guid UsuarioId, Rol Rol);
+public sealed record SolicitudCambioDeRol(Guid UsuarioId, string Rol);
 
 /// <summary>
 /// Cuerpo de <c>POST /usuarios/desactivar</c> y de <c>POST /usuarios/reactivar</c>.
