@@ -94,6 +94,25 @@ public interface IServicioDeContrasenas
         Guid usuarioId,
         string urlBase,
         CancellationToken cancelacion = default);
+
+    /// <summary>
+    /// Cambia la contraseña del usuario que hace la petición, indicando la actual
+    /// (RF-CA-22).
+    ///
+    /// Con la contraseña actual incorrecta el cambio se rechaza sin tocar nada. Al
+    /// aceptarlo aplican RF-CA-14 (la nueva cumple la política) y RF-CA-12 (se cierran
+    /// las sesiones abiertas, incluida la que hizo la petición).
+    /// </summary>
+    /// <exception cref="ExcepcionDominio">
+    /// <see cref="TipoError.NoEncontrado"/> si el usuario no existe, o
+    /// <see cref="TipoError.ReglaDeNegocio"/> si la contraseña actual no es la del
+    /// usuario.
+    /// </exception>
+    Task CambiarPropiaAsync(
+        Guid usuarioId,
+        string contrasenaActual,
+        string contrasenaNueva,
+        CancellationToken cancelacion = default);
 }
 
 public sealed class ServicioDeContrasenas(
@@ -275,6 +294,43 @@ public sealed class ServicioDeContrasenas(
         // fallara, el usuario se quedaria sin poder entrar y sin saber por que, que es
         // el peor de los dos desordenes posibles.
         await EmitirCodigoAsync(db, usuario, urlBase, cancelacion);
+    }
+
+    public async Task CambiarPropiaAsync(
+        Guid usuarioId,
+        string contrasenaActual,
+        string contrasenaNueva,
+        CancellationToken cancelacion = default)
+    {
+        // La política se comprueba antes que la contraseña actual, y no al revés: el
+        // usuario ya está autenticado, así que el motivo del rechazo no le revela
+        // nada, y "la nueva es demasiado corta" es un mensaje más accionable que
+        // "la actual no es correcta" cuando ambas cosas están mal.
+        var problema = PoliticaDeContrasenas.Validar(contrasenaNueva);
+        if (problema is not null)
+        {
+            throw ExcepcionDominio.Validacion("contrasena.invalida", problema);
+        }
+
+        await using var db = await fabrica.CreateDbContextAsync(cancelacion);
+
+        var usuario = await db.Usuarios
+            .FirstOrDefaultAsync(u => u.Id == usuarioId, cancelacion)
+            ?? throw ExcepcionDominio.NoEncontrado(
+                "usuario.no_encontrado", "Usuario no encontrado.");
+
+        if (hasher.VerifyHashedPassword(usuario, usuario.PasswordHash, contrasenaActual ?? string.Empty)
+            == PasswordVerificationResult.Failed)
+        {
+            // No es NoAutenticado: la identidad ya está establecida. Es un Estándar o
+            // un Administrador que sabe quién es y ha escrito mal su contraseña
+            // actual, que es un error de negocio, no una falta de identificación.
+            throw ExcepcionDominio.ReglaDeNegocio(
+                "contrasena.actual_incorrecta", "La contraseña actual no es correcta.");
+        }
+
+        await SustituirContrasenaYCerrarSesionesAsync(
+            db, usuario, contrasenaNueva, "Cambio de contraseña por el usuario.", cancelacion);
     }
 
     /// <summary>
