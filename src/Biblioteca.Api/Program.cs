@@ -8,6 +8,7 @@ using Biblioteca.Nucleo.Notificacion;
 using Biblioteca.Identidad;
 using Biblioteca.Identidad.Acceso;
 using Biblioteca.Identidad.Autorizacion;
+using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Entidades;
 using Biblioteca.Identidad.Persistencia;
 using Biblioteca.Identidad.Registro;
@@ -72,6 +73,11 @@ builder.Services.AddScoped<IServicioDeRegistro, ServicioDeRegistro>();
 // =============================================================================================
 builder.Services.AddScoped<IServicioDeAcceso, ServicioDeAcceso>();
 
+// Contraseñas: recuperación, restablecimiento y cambio propio. Va aparte del acceso
+// porque no se ocupa de abrir sesión, sino de lo que hace un usuario que ya no puede
+// (RF-CA-09, RF-CA-10).
+builder.Services.AddScoped<IServicioDeContrasenas, ServicioDeContrasenas>();
+
 // El hash de contraseña se inyecta, no se instancia dentro del servicio, para que las
 // pruebas puedan sustituirlo por uno rápido. El algoritmo por defecto es PBKDF2 con sal
 // propia del usuario: es el que garantiza RF-CA-02 sin que escribamos criptografía a mano.
@@ -103,6 +109,13 @@ builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .AddAuthenticationSchemes(EsquemaAutenticacion.Nombre)
+        // Este requisito es lo que hace que RequisitoDeOperacionHandler se ejecute en
+        // TODA acción que no sea [AllowAnonymous]. ASP.NET sólo invoca un handler si
+        // alguna política le pide su requisito, y sin esta línea ninguna lo pedía: el
+        // handler quedaba registrado y muerto, y la exigencia de rol de RF-CA-05 no
+        // se comprobaba en ninguna petición. El guard de arranque declaraba la
+        // operación y la política la conocía, pero nadie la evaluaba.
+        .AddRequirements(new RequisitoDeOperacion())
         .Build());
 
 builder.Services.AddControllers(opciones =>

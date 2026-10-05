@@ -447,6 +447,43 @@ declarada impide que la aplicación arranque):
 dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~GuardDeOperaciones"
 ```
 
+Declarar la operación es sólo la mitad; la otra mitad es **que alguien la evalúe**. El hilo
+es este, y cada peldaño tiene su sitio:
+
+```
+[RequiereOperacion("usuarios.forzarRestablecimiento")]        ← la acción nombra la operación
+        ↓
+Program.cs, política de repliego: .AddRequirements(new RequisitoDeOperacion())
+        ↓
+RequisitoDeOperacionHandler: lee la operación de los metadatos de la acción
+        ↓
+PoliticaDeOperaciones.RolesDe(operación)                     ← quién puede, en un solo punto
+```
+
+El requisito va en la **política de repliego** y no en cada acción, así que el handler se
+ejecuta en todas las que no son `[AllowAnonymous]` sin que ningún controlador tenga que
+acordarse de pedirlo. Para verlo:
+
+```powershell
+Select-String -Path src\Biblioteca.Api\Program.cs -Pattern "AddRequirements"
+```
+
+Y el extremo que de verdad importa —un Estándar contra un endpoint de Administrador, con la
+petición escrita a mano— está en `RecuperacionDeContrasenaTests` (§6.14):
+
+```powershell
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~Un_estandar_recibe_403"
+```
+
+> Esa prueba existe porque este requisito fallaba. `RequisitoDeOperacionHandler` estaba
+> registrado en el contenedor y **no lo invocaba nadie**: ASP.NET Core sólo evalúa un handler
+> si alguna política le pide su requisito, y ninguna lo pedía. La política de repliego sólo
+> exigía estar autenticado, de modo que la exigencia de rol no se comprobaba en ninguna
+> petición y cualquier credencial válida llegaba a cualquier endpoint. El guard de arranque,
+> la tabla de la política y el barrido de pruebas eran correctos; faltaba el cable entre
+> ellos. Lo destapó `POST /usuarios/restablecer-contrasena`, la primera llamada
+> de extremo a extremo que hace un Estándar sobre un endpoint reservado al Administrador.
+
 ### 6.11 Registrar y activar una cuenta, de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17)
 
 Los seis criterios se comprueba con la misma secuencia, que es exactamente lo que hace el
@@ -697,9 +734,204 @@ dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~SesionTests"
 Las 21 pruebas cubren los cinco puntos de arriba de extremo a extremo: no se simula nada,
 se habla HTTP contra la aplicación real y se comprueba la base.
 
+### 6.14 Recuperar la contraseña, restablecerla y cambiarla (RF-CA-09, 10, 11, 12, 13, 22)
 
+Seis criterios, cinco endpoints:
 
-### 6.14 Registrar un usuario funciona con el SMTP apagado (RF-NOT-08)
+| Método | Ruta | ¿Exige sesión? | Criterio |
+|---|---|---|---|
+| `POST` | `/contrasenas/recuperacion` | No | RF-CA-09, RF-CA-10 |
+| `GET` | `/contrasenas/recuperacion?codigo=…` | No | RF-CA-10 |
+| `POST` | `/contrasenas/restablecer` | No | RF-CA-10, RF-CA-11, RF-CA-12 |
+| `POST` | `/contrasenas/propia` | Sí | RF-CA-22 (+ RF-CA-14, RF-CA-12) |
+| `POST` | `/usuarios/restablecer-contrasena` | Sí, sólo Administrador | RF-CA-13 |
+
+Arranca la API y ten a mano un usuario **activado** (§6.11 lo explica). En lo que sigue
+`$clave` es su contraseña, y `$usuarioId` su identificador:
+
+```powershell
+$api = "http://localhost:5XXX"
+$usuarioId = (Invoke-RestMethod "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com"; contrasena = $clave } | ConvertTo-Json)).usuario.id
+```
+
+#### a) Pedir el código no revela qué correos están registrados (RF-CA-09)
+
+Ésta es la comprobación literal que pide el enunciado. Las tres respuestas tienen que ser
+**idénticas byte a byte**:
+
+```powershell
+$existe = Invoke-WebRequest "$api/contrasenas/recuperacion" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com" } | ConvertTo-Json)
+
+$noExiste = Invoke-WebRequest "$api/contrasenas/recuperacion" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "nadie@example.com" } | ConvertTo-Json)
+
+$malFormado = Invoke-WebRequest "$api/contrasenas/recuperacion" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "esto-no-es-un-correo" } | ConvertTo-Json)
+
+$existe.StatusCode                        # 202
+$existe.Content -eq $noExiste.Content     # True
+$existe.Content -eq $malFormado.Content   # True
+```
+
+Y **nada se encola para quien no existe**: encolarle un correo a una dirección no registrada
+sería una fuga en sí misma, peor que la que se quería evitar.
+
+```sql
+SELECT Destinatario, Estado, Intentos, FechaEnvio FROM CorreoEnCola
+WHERE Destinatario IN ('ana@example.com', 'nadie@example.com') ORDER BY CreadoEn DESC;
+```
+
+Sólo puede aparecer `ana@example.com`, con `Estado = 'Pendiente'`, `Intentos = 0` y
+`FechaEnvio = NULL`: el correo **sale por la cola, no por SMTP** (RF-NOT-08). Repite el paso
+con el SMTP apagado y funciona igual (§6.15).
+
+Para sacar el código, léelo del correo encolado:
+
+```sql
+SELECT TOP 1 Cuerpo FROM CorreoEnCola
+WHERE Destinatario = 'ana@example.com' ORDER BY CreadoEn DESC;
+```
+
+El valor que va detrás de `?codigo=` en el enlace es `$codigo`. En la base **sólo queda su
+SHA-256**, nunca el valor en claro:
+
+```sql
+SELECT CONVERT(VARCHAR(64), CodigoHash, 2) AS HashHex, EmitidoEn, VenceEn, UsadoEn
+FROM CodigoRecuperacion ORDER BY EmitidoEn DESC;
+```
+
+#### b) El código es de un solo uso y caduca (RF-CA-10)
+
+**Usarlo dos veces se rechaza y la contraseña no cambia**:
+
+```powershell
+Invoke-RestMethod "$api/contrasenas/restablecer" -Method Post -ContentType "application/json" `
+    -Body (@{ codigo = $codigo; contrasenaNueva = "NuevaClave2026" } | ConvertTo-Json)
+
+Invoke-WebRequest "$api/contrasenas/restablecer" -Method Post -ContentType "application/json" `
+    -Body (@{ codigo = $codigo; contrasenaNueva = "OtraClave2026" } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 422
+```
+
+Un código **caducado** se rechaza igual, con el mismo 422 y sin tocar la contraseña. Para
+verlo sin esperar los 30 minutos, adelanta el vencimiento:
+
+```sql
+UPDATE CodigoRecuperacion SET VenceEn = DATEADD(minute, -1, SYSDATETIMEOFFSET());
+```
+
+> **Pedir la recuperación dos veces invalida el código anterior**: sólo el último emitido
+> sirve. Y `GET /contrasenas/recuperacion?codigo=…`, que es la ruta a la que apunta el enlace
+> del correo, **comprueba** el código sin gastarlo — para poder responder al enlace sin
+> consumir lo que el usuario aún tiene que usar.
+
+#### c) La contraseña nueva se guarda hasheada y la anterior deja de servir (RF-CA-11)
+
+```sql
+SELECT Correo, PasswordHash, PasswordCambiadoEn FROM Usuario WHERE Correo = 'ana@example.com';
+```
+
+`PasswordHash` no contiene `NuevaClave2026` en ningún sitio. Con la nueva se entra; con la
+antigua, `POST /sesion/iniciar` responde 401.
+
+#### d) Las sesiones abiertas antes del cambio dejan de servir (RF-CA-12)
+
+Ésta es la parte que más se olvida. Abre sesión **antes** de restablecer y guarda la
+credencial:
+
+```powershell
+$antes = Invoke-RestMethod "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com"; contrasena = $clave } | ConvertTo-Json)
+```
+
+Restablece la contraseña y usa **esa credencial, la de antes**:
+
+```powershell
+Invoke-WebRequest "$api/sesion/yo" -Headers @{ Authorization = "Bearer $($antes.token)" } `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 401
+```
+
+Las sesiones están en la base, no dentro de un token autocontenido, y por eso se pueden
+revocar:
+
+```sql
+SELECT CerradaEn, MotivoCierre FROM Sesion WHERE CerradaEn IS NOT NULL;
+```
+
+> **Las sesiones se cierran ANTES de guardar la contraseña nueva.** Si el proceso se cae
+> entre los dos pasos, el peor desenlace es que las credenciales viejas ya no sirvan y el
+> usuario tenga que entrar otra vez. Al revés, un fallo dejaría credenciales activas junto a
+> una contraseña nueva, que es justo lo que RF-CA-12 viene a cerrar. Cerrar es la dirección en
+> la que se falla.
+
+#### e) Un Administrador puede forzar el restablecimiento (RF-CA-13)
+
+```powershell
+$admin = Invoke-RestMethod "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "admin@example.com"; contrasena = $claveAdmin } | ConvertTo-Json)
+
+Invoke-RestMethod "$api/usuarios/restablecer-contrasena" -Method Post `
+    -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($admin.token)" } `
+    -Body (@{ usuarioId = $usuarioId } | ConvertTo-Json)
+```
+
+La contraseña anterior deja de servir **en el acto**, y las sesiones abiertas de ese usuario
+se cierran. No hay ningún estado «pendiente de restablecer»: la contraseña se sustituye por
+un valor aleatorio de 256 bits que no se guarda en ningún sitio y que nadie, tampoco el
+Administrador, conoce. Después se encola un código al correo registrado, con el que el usuario
+puede dejar la suya.
+
+Un Estándar recibe **403**, incluso si construye la petición a mano sin pasar por ninguna
+interfaz (RD-06):
+
+```powershell
+Invoke-WebRequest "$api/usuarios/restablecer-contrasena" -Method Post `
+    -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($otro.token)" } `
+    -Body (@{ usuarioId = $usuarioId } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 403
+```
+
+#### f) Cambiar la contraseña propia exige la actual (RF-CA-22)
+
+```powershell
+Invoke-WebRequest "$api/contrasenas/propia" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $token" } `
+    -Body (@{ contrasenaActual = "ClaveEquivocada9"; contrasenaNueva = "NuevaClave2026" } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 422
+```
+
+Con la actual incorrecta el cambio **se rechaza y no toca nada**: ni cambia el hash, ni cierra
+la sesión. La respuesta es **422 y no 401** — la identidad ya está establecida, así que un 401
+haría creer al cliente que su credencial caducó (ver §6.13).
+
+Con la actual correcta responde 200 y **cierra también la sesión que hizo la petición**, que es
+lo que dice RF-CA-12; el mensaje de respuesta lo avisa para que el cliente no se entere por un
+401 inesperado en la llamada siguiente.
+
+La contraseña nueva tiene que cumplir la política de **RF-CA-14 en los tres caminos**:
+recuperación, restablecimiento forzado y cambio propio.
+
+#### Comprobación automática
+
+```powershell
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~RecuperacionDeContrasenaTests"
+```
+
+Las 31 pruebas cubren los seis criterios de extremo a extremo sin simular nada: se habla HTTP
+contra la aplicación real, el código se saca **del correo encolado** en lugar de inventarlo, y
+el servidor SMTP está apagado durante toda la serie.
+
+> **Una limitación que conviene saber.** La respuesta de pedir la recuperación es idéntica
+> byte a byte, pero **no el tiempo**: para un correo registrado hay un insert y un encolado que
+> no ocurren para uno inexistente. Igualarlo exigiría encolar también a las direcciones no
+> registradas, que es una fuga mayor que la que se quería evitar. La enumeración por
+> temporización queda aquí documentada como límite conocido, no resuelta.
+
+### 6.15 Registrar un usuario funciona con el SMTP apagado (RF-NOT-08)
 
 **Ésta es la prueba clave de la cola de correo.**
 
@@ -716,7 +948,7 @@ FROM CorreoEnCola ORDER BY CreadoEn DESC;
 
 `Estado` debe ser `Pendiente` y `FechaEnvio` debe ser `NULL`.
 
-### 6.15 El emisor de correo es un proceso aparte (RF-NOT-09)
+### 6.16 El emisor de correo es un proceso aparte (RF-NOT-09)
 
 ```powershell
 dotnet run --project tools/Biblioteca.Correo.Enviador
@@ -730,7 +962,7 @@ info     Correo <guid> entregado.
 info     Proceso terminado. Enviados: 1. Con fallo: 0
 ```
 
-### 6.16 Ejecutar el emisor dos veces no duplica correos (RF-NOT-12)
+### 6.17 Ejecutar el emisor dos veces no duplica correos (RF-NOT-12)
 
 ```powershell
 dotnet run --project tools/Biblioteca.Correo.Enviador
@@ -750,7 +982,7 @@ SELECT Estado, COUNT(*) FROM CorreoEnCola GROUP BY Estado;
 
 Un correo enviado **no** aparece como `Pendiente` en la segunda ejecución.
 
-### 6.17 El emisor se puede ejecutar sin que el proceso que encoló siga vivo
+### 6.18 El emisor se puede ejecutar sin que el proceso que encoló siga vivo
 
 1. Registra un usuario con el SMTP apagado. El correo queda `Pendiente`.
 2. Cierra la API por completo.
@@ -760,7 +992,7 @@ Un correo enviado **no** aparece como `Pendiente` en la segunda ejecución.
 El correo se envía. **Esto es lo que prueba RF-NOT-09**: el envío no depende del flujo
 que creó el correo.
 
-### 6.18 Los fallos internos no se filtran (RD-08)
+### 6.19 Los fallos internos no se filtran (RD-08)
 
 ```powershell
 Invoke-RestMethod http://localhost:5XXX/usuarios -Headers @{ Authorization = "Bearer token-invalido" } -ErrorAction SilentlyContinue
@@ -779,6 +1011,7 @@ nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 |---|---|
 | **RF-CA-05** — un solo punto de exigencia de rol | `src/Biblioteca.Identidad/PoliticaDeOperaciones.cs` |
 | RF-CA-05 — que no se pueda saltar | `src/Biblioteca.Api/Seguridad/ValidarOperacionesDeclaradasConvention.cs` |
+| RF-CA-05 — que la exigencia de rol se evalúe de verdad | `RequisitoDeOperacion`, en la política de repliego de `Program.cs` + `RequisitoDeOperacionHandler` (§6.10) |
 | RF-CA-02 — hash con sal por usuario | `PasswordHasher<Usuario>`, inyectado en `ServicioDeRegistro` (decisión en `docs/diseno-de-componentes.md`, §4.5) |
 | RF-CA-14 — política de contraseñas | `src/Biblioteca.Identidad/Password/PoliticaDeContrasenas.cs` |
 | RF-CA-01 — correo único | Índice `UQ_Usuario_Correo`, aplicado en `IdentidadDbContext.cs` |
@@ -797,7 +1030,17 @@ nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 | **RF-CA-18** — el cierre es efectivo | `SesionController.Cerrar` → `IServicioDeSesiones.CerrarAsync` |
 | RF-CA-12 / 18 / 20 — revocación | `IServicioDeSesiones.CerrarAsync` / `.CerrarTodasAsync` |
 | **RF-CA-19** — bloqueo tras 5 intentos | `ServicioDeAcceso.AutenticarAsync` + `Usuario.IntentosFallidos` / `BloqueadoHasta` |
-| RF-CA-10 — código de recuperación | `CodigoRecuperacion` |
+| **RF-CA-09** — la respuesta no revela qué correos existen | `ContrasenasController.IniciarRecuperacion` (202 fijo) + `ServicioDeContrasenas.IniciarRecuperacionAsync` (devuelve `void`) |
+| **RF-CA-10** — código de un solo uso, con vencimiento | `CodigoRecuperacion.EstaVigente` + `ServicioDeContrasenas.EmitirCodigoAsync` / `.BuscarCodigoVigenteAsync` |
+| RF-CA-10 — el enlace del correo no gasta el código | `GET /contrasenas/recuperacion` → `.ComprobarCodigoAsync` |
+| RF-CA-10 — sale por la cola, no por SMTP | `ServicioDeContrasenas.EmitirCodigoAsync` → `IEncolaCorreo`, `Plantilla = "recuperacion"` |
+| **RF-CA-11** — la nueva sirve y la anterior deja de servir | `ServicioDeContrasenas.SustituirContrasenaYCerrarSesionesAsync` (`PasswordHasher<Usuario>`) |
+| **RF-CA-12** — se cierran las sesiones abiertas | `IServicioDeSesiones.CerrarTodasAsync`, con el mismo contexto del cambio |
+| **RF-CA-13** — restablecimiento forzado | `ServicioDeContrasenas.ForzarRestablecimientoAsync` + `POST /usuarios/restablecer-contrasena` |
+| **RF-CA-22** — cambio propio con la actual | `ServicioDeContrasenas.CambiarPropiaAsync` + `POST /contrasenas/propia` |
+| RF-CA-14 — la política se cumple en los tres caminos | `PoliticaDeContrasenas.Validar`, llamado antes de tocar la base en cada uno |
+| RF-CA-09/10/11/12/22 — las cinco acciones | `src/Biblioteca.Api/Controllers/ContrasenasController.cs` |
+| RF-CA-09/10/11/12/13/22 — comprobación automática | `tests/Biblioteca.Api.Tests/RecuperacionDeContrasenaTests.cs` (31 pruebas) |
 | **RF-NOT-08** — encolar, no enviar | `EncolaCorreo` + puerto `IEncolaCorreo` (que vive en el Core, §4) |
 | **RF-NOT-09** — envío en proceso aparte | `tools/Biblioteca.Correo.Enviador` |
 | **RF-NOT-12** — sin envíos duplicados | `SmtpEntregador.EntregarAsync` (reclamo condicional) |
@@ -847,16 +1090,20 @@ Para que quede claro que es alcance, y no omisión:
 | `POST` | `/sesion/iniciar` | Ninguna | Inicia sesión y entrega la credencial (RF-CA-03, 15, 19) |
 | `GET` | `/sesion/yo` | Credencial de sesión | Usuario autenticado y su rol (RF-CA-07) |
 | `POST` | `/sesion/cerrar` | Credencial de sesión | Cierra la sesión e invalida la credencial (RF-CA-18) |
+| `POST` | `/contrasenas/recuperacion` | Ninguna | Pide un código de un solo uso, sin revelar qué correos existen (RF-CA-09, 10) |
+| `GET` | `/contrasenas/recuperacion?codigo=…` | Ninguna | Abre el enlace del correo; comprueba el código **sin gastarlo** (RF-CA-10) |
+| `POST` | `/contrasenas/restablecer` | Ninguna | Define la contraseña con el código y cierra las sesiones (RF-CA-11, 12) |
+| `POST` | `/contrasenas/propia` | Credencial de sesión | Cambia la contraseña indicando la actual (RF-CA-22) |
+| `POST` | `/usuarios/restablecer-contrasena` | Credencial de sesión, rol Administrador | Restablecimiento forzado; mata la contraseña anterior (RF-CA-13) |
 
-Las tres acciones de registro y `POST /sesion/iniciar` son públicas a propósito: todavía no
-hay identidad que exigir. Es el mismo tratamiento que recibe `/salud` en el guard de
-arranque (`ValidarOperacionesDeclaradasConvention` exceptúa las acciones
+Las tres acciones de registro, `POST /sesion/iniciar` y las tres de recuperación son públicas
+a propósito: todavía no hay identidad que exigir. Es el mismo tratamiento que recibe `/salud`
+en el guard de arranque (`ValidarOperacionesDeclaradasConvention` exceptúa las acciones
 `[AllowAnonymous]`), y no es una excepción a RF-CA-05 sino su caso honesto. Todas las demás
-acciones del sistema siguen declarando su operación.
+acciones del sistema siguen declarando su operación **y son evaluadas en cada petición** (§6.10).
 
-Los endpoints de la pieza 1 que faltan (cambio de contraseña, recuperación, administración
-de usuarios) llegan en los siguientes *pull requests*. Cada uno se documenta aquí con su
-criterio de aceptación, en la sección 6.
+Lo único que queda de la pieza 1 es la administración de usuarios (RF-CA-04, 05, 06, 08, 20 y
+21), y llega en el siguiente *pull request* con sus propias pruebas de 403.
 
 ### Pruebas
 
@@ -869,5 +1116,5 @@ dotnet test Biblioteca.sln
 | `Biblioteca.Nucleo.Tests` | 10 | Tipos de error, contrato de auditoría |
 | `Biblioteca.Identidad.Tests` | 44 | Política de operaciones (RF-CA-05), guard de arranque, contraseñas (RF-CA-14), generación de tokens |
 | `Biblioteca.Biblioteca.Tests` | 32 | Estructura de la máquina de estados (RF-NEG-03/04/05) y relaciones del modelo de datos (RF-NEG-01, RD-03) |
-| `Biblioteca.Api.Tests` | 47 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17) y sesión de extremo a extremo (RF-CA-03, 07, 18, 19) |
-| **Total** | **133** | |
+| `Biblioteca.Api.Tests` | 78 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17), sesión de extremo a extremo (RF-CA-03, 07, 18, 19) y contraseñas de extremo a extremo (RF-CA-09, 10, 11, 12, 13, 22) |
+| **Total** | **164** | |
