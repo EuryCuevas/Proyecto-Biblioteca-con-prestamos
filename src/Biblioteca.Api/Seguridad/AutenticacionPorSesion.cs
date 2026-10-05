@@ -21,6 +21,9 @@ public static class EsquemaAutenticacion
 ///
 /// Se revalida también <c>Usuario.Activo</c> en cada petición, de modo que desactivar
 /// a un usuario invalida sus sesiones abiertas aunque nadie las cierre (RF-CA-20).
+/// Desactivar además las cierra en el acto, y esta comprobación es la segunda red: si
+/// alguien desactiva una cuenta por un camino que no pase por el servicio de
+/// administración, la credencial sigue sin servir.
 /// </summary>
 public sealed class AutenticacionPorSesion(
     IOptionsMonitor<AuthenticationSchemeOptions> opciones,
@@ -56,6 +59,17 @@ public sealed class AutenticacionPorSesion(
         {
             // Credencial cerrada, vencida o inexistente: se rechaza igual que si fuera
             // inválida, sin revelar por qué (RF-CA-03).
+            return AuthenticateResult.Fail("Credencial de sesión no válida.");
+        }
+
+        if (!sesion.Usuario.Activo)
+        {
+            // Cuenta desactivada: la credencial es rechazada, y con el mismo motivo
+            // genérico de arriba, porque decir "tu cuenta está desactivada" a quien
+            // enseña una credencial que fue válida confirma que lo fue. El usuario ve
+            // 401, que es exactamente lo mismo que verá cuando su Administrador le
+            // cierre las sesiones —que es lo que hace al desactivarlo, en el mismo
+            // acto (RF-CA-20).
             return AuthenticateResult.Fail("Credencial de sesión no válida.");
         }
 
