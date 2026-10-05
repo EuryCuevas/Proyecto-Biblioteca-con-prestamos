@@ -1,4 +1,5 @@
 using Biblioteca.Identidad;
+using Biblioteca.Identidad.Administracion;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Registro;
@@ -8,8 +9,8 @@ using Microsoft.AspNetCore.Mvc;
 namespace Biblioteca.Api.Controllers;
 
 /// <summary>
-/// Alta de cuentas y activación por enlace, y el restablecimiento forzado de
-/// contraseña que puede pedir un Administrador.
+/// Alta de cuentas y activación por enlace, y la administración de usuarios: listado,
+/// cambio de rol, desactivación, reactivación y restablecimiento forzado de contraseña.
 /// </summary>
 /// <remarks>
 /// Las tres primeras acciones son <c>[AllowAnonymous]</c>: todavía no hay usuario ni sesión. No es
@@ -17,12 +18,17 @@ namespace Biblioteca.Api.Controllers;
 /// identidad no puede exigir un rol. La convención
 /// <c>ValidarOperacionesDeclaradasConvention</c> exceptúa justamente las acciones
 /// anónimas, y el resto del sistema sigue declarando su operación.
+///
+/// A partir de <c>GET /usuarios</c>, todas las acciones declaran una operación que
+/// <c>PoliticaDeOperaciones</c> reserva al Administrador, y todas se evalúan en cada
+/// petición (RF-CA-06, RD-06).
 /// </remarks>
 [ApiController]
 [Route("usuarios")]
 public sealed class UsuariosController(
     IServicioDeRegistro registro,
-    IServicioDeContrasenas contrasenas) : ControllerBase
+    IServicioDeContrasenas contrasenas,
+    IServicioDeAdministracion administracion) : ControllerBase
 {
     /// <summary>
     /// Registra una cuenta (RF-CA-01, RF-CA-02, RF-CA-14, RF-CA-15).
@@ -123,6 +129,31 @@ public sealed class UsuariosController(
             mensaje = "Contraseña restablecida y sesiones cerradas. Se ha encolado un " +
                       "código de recuperación al correo registrado."
         });
+    }
+
+    /// <summary>
+    /// Lista los usuarios con su rol y su estado (RF-CA-21).
+    ///
+    /// Nunca incluye hashes ni tokens: la proyección es a
+    /// <see cref="ResumenDeUsuario"/>, que no tiene ningún campo de ese tipo, y la
+    /// proyección ocurre en SQL, de modo que <c>PasswordHash</c> ni siquiera llega a
+    /// salir de la base.
+    /// </summary>
+    /// <remarks>
+    /// La operación es <c>UsuariosListar</c>, que <c>PoliticaDeOperaciones</c> reserva al
+    /// Administrador (RF-CA-05). Un Estándar recibe 403, y también si construye la
+    /// petición a mano sin pasar por la interfaz (RF-CA-06, RD-06).
+    /// </remarks>
+    [HttpGet]
+    [RequiereOperacion(Operaciones.UsuariosListar)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> Listar(CancellationToken cancelacion)
+    {
+        var usuarios = await administracion.ListarAsync(cancelacion);
+
+        return Ok(usuarios);
     }
 
     /// <summary>

@@ -7,6 +7,7 @@ using Biblioteca.Correo.Persistencia;
 using Biblioteca.Nucleo.Notificacion;
 using Biblioteca.Identidad;
 using Biblioteca.Identidad.Acceso;
+using Biblioteca.Identidad.Administracion;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Entidades;
@@ -77,6 +78,13 @@ builder.Services.AddScoped<IServicioDeAcceso, ServicioDeAcceso>();
 // porque no se ocupa de abrir sesión, sino de lo que hace un usuario que ya no puede
 // (RF-CA-09, RF-CA-10).
 builder.Services.AddScoped<IServicioDeContrasenas, ServicioDeContrasenas>();
+
+// Administración de usuarios: listado, cambio de rol y activación/desactivación. Va
+// aparte de las otras cuatro piezas porque es la única que trata a un usuario sobre
+// los demás en lugar de sobre sí mismo, y porque su exigencia de rol es distinta: las
+// cuatro anteriores admiten Estándar y Administrador, y ésta sólo Administrador
+// (RF-CA-04, RF-CA-06, RF-CA-08, RF-CA-20, RF-CA-21).
+builder.Services.AddScoped<IServicioDeAdministracion, ServicioDeAdministracion>();
 
 // El hash de contraseña se inyecta, no se instancia dentro del servicio, para que las
 // pruebas puedan sustituirlo por uno rápido. El algoritmo por defecto es PBKDF2 con sal
