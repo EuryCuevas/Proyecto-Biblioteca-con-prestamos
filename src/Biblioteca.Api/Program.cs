@@ -6,6 +6,7 @@ using Biblioteca.Correo;
 using Biblioteca.Correo.Persistencia;
 using Biblioteca.Nucleo.Notificacion;
 using Biblioteca.Identidad;
+using Biblioteca.Identidad.Acceso;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Entidades;
 using Biblioteca.Identidad.Persistencia;
@@ -62,6 +63,14 @@ builder.Services.AddScoped<IServicioDeSesiones, ServicioDeSesiones>();
 // Registro y activación (RF-CA-01, 02, 14, 15, 16, 17). La pieza decide; el host traduce.
 // =============================================================================================
 builder.Services.AddScoped<IServicioDeRegistro, ServicioDeRegistro>();
+
+// =============================================================================================
+// Acceso: decide si una pareja de credenciales abre sesión, y con qué restricciones
+// (cuenta activa, bloqueo por intentos). Va aparte de las sesiones porque aquél da de
+// baja el ciclo de vida de una credencial ya emitida, y esto no sabe nada de eso
+// (RF-CA-03, RF-CA-07, RF-CA-18, RF-CA-19, RF-CA-15).
+// =============================================================================================
+builder.Services.AddScoped<IServicioDeAcceso, ServicioDeAcceso>();
 
 // El hash de contraseña se inyecta, no se instancia dentro del servicio, para que las
 // pruebas puedan sustituirlo por uno rápido. El algoritmo por defecto es PBKDF2 con sal

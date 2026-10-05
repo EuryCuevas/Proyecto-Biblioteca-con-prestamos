@@ -11,6 +11,7 @@ public class ErroresDelDominioTests
 {
     [Theory]
     [InlineData(TipoError.Validacion)]
+    [InlineData(TipoError.NoAutenticado)]
     [InlineData(TipoError.NoAutorizado)]
     [InlineData(TipoError.NoEncontrado)]
     [InlineData(TipoError.Conflicto)]

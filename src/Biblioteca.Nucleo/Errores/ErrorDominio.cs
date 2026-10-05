@@ -9,7 +9,17 @@ public enum TipoError
     /// <summary>Entrada ausente, mal formada o fuera de rango (RD-07).</summary>
     Validacion,
 
-    /// <summary>Operación reservada a otro rol, o sin sesión válida (RD-06).</summary>
+    /// <summary>
+    /// La identidad no quedó establecida: credenciales que no sirven, cuenta bloqueada
+    /// por intentos o cuenta sin activar. Se traduce a <b>401</b>, que significa
+    /// "no sé quién eres" (RF-CA-03, RF-CA-15, RF-CA-19).
+    /// </summary>
+    NoAutenticado,
+
+    /// <summary>
+    /// La identidad se conoce pero la operación está reservada a otro rol. Se traduce a
+    /// <b>403</b>: "sé quién eres, pero no puedes" (RF-CA-05, RF-CA-06, RD-06).
+    /// </summary>
     NoAutorizado,
 
     /// <summary>El recurso solicitado no existe.</summary>
@@ -46,6 +56,9 @@ public sealed class ExcepcionDominio : Exception
 
     public static ExcepcionDominio Validacion(string codigo, string mensaje) =>
         new(TipoError.Validacion, codigo, mensaje);
+
+    public static ExcepcionDominio NoAutenticado(string codigo, string mensaje) =>
+        new(TipoError.NoAutenticado, codigo, mensaje);
 
     public static ExcepcionDominio NoAutorizado(string codigo, string mensaje) =>
         new(TipoError.NoAutorizado, codigo, mensaje);

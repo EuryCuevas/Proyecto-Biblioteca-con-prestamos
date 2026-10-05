@@ -44,6 +44,7 @@ public sealed class ManejadorDeExcepciones(
         var estado = excepcion.Tipo switch
         {
             TipoError.Validacion => StatusCodes.Status400BadRequest,
+            TipoError.NoAutenticado => StatusCodes.Status401Unauthorized,
             TipoError.NoAutorizado => StatusCodes.Status403Forbidden,
             TipoError.NoEncontrado => StatusCodes.Status404NotFound,
             TipoError.Conflicto => StatusCodes.Status409Conflict,
@@ -65,6 +66,14 @@ public sealed class ManejadorDeExcepciones(
         contexto.Response.Clear();
         contexto.Response.StatusCode = estado;
         contexto.Response.ContentType = "application/problem+json";
+
+        if (excepcion.Tipo is TipoError.NoAutenticado)
+        {
+            // RFC 9110 pide acompañar un 401 del desafío de autenticación. La credencial
+            // es opaca y viaja como Bearer, así que el desafío también lo es.
+            contexto.Response.Headers.WWWAuthenticate =
+                $"{Seguridad.EsquemaAutenticacion.Nombre} realm=\"Biblioteca\"";
+        }
 
         await contexto.Response.WriteAsJsonAsync(new ProblemDetails
         {
