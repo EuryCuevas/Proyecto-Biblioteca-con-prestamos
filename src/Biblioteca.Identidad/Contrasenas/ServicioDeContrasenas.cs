@@ -74,6 +74,26 @@ public interface IServicioDeContrasenas
         string codigo,
         string contrasenaNueva,
         CancellationToken cancelacion = default);
+
+    /// <summary>
+    /// Restablece la contraseña de un usuario desde la administración (RF-CA-13).
+    ///
+    /// La contraseña anterior deja de servir en el acto y las sesiones abiertas se
+    /// cierran. Después se emite un código nuevo y se encola al correo registrado,
+    /// que es lo que le permitirá al usuario definir una contraseña.
+    /// </summary>
+    /// <remarks>
+    /// Esta operación no lleva la cuenta a un estado "pendiente de restablecer": el
+    /// sistema no tiene ninguno. Lo que hace es dejar la contraseña en un valor que
+    /// nadie conoce, que es exactamente lo que exige RF-CA-13.
+    /// </remarks>
+    /// <exception cref="ExcepcionDominio">
+    /// <see cref="TipoError.NoEncontrado"/> si no existe ese usuario.
+    /// </exception>
+    Task ForzarRestablecimientoAsync(
+        Guid usuarioId,
+        string urlBase,
+        CancellationToken cancelacion = default);
 }
 
 public sealed class ServicioDeContrasenas(
@@ -229,6 +249,32 @@ public sealed class ServicioDeContrasenas(
         await sesiones.CerrarTodasAsync(usuario.Id, motivo, db, cancelacion);
 
         await db.SaveChangesAsync(cancelacion);
+    }
+
+    public async Task ForzarRestablecimientoAsync(
+        Guid usuarioId,
+        string urlBase,
+        CancellationToken cancelacion = default)
+    {
+        await using var db = await fabrica.CreateDbContextAsync(cancelacion);
+
+        var usuario = await db.Usuarios
+            .FirstOrDefaultAsync(u => u.Id == usuarioId, cancelacion)
+            ?? throw ExcepcionDominio.NoEncontrado(
+                "usuario.no_encontrado", "Usuario no encontrado.");
+
+        // La contraseña se sustituye por un valor aleatorio de 256 bits que no se
+        // guarda en ningun sitio y que nadie, tampoco el Administrador, conoce. Es la
+        // unica forma de que "la contrasena anterior deja de servir" sin dejar al
+        // usuario con una contrasena inventada por el sistema que luego tendria que
+        // cambiar (RF-CA-13).
+        await SustituirContrasenaYCerrarSesionesAsync(
+            db, usuario, GeneradorDeSecretos.NuevoToken(), "Restablecimiento forzado por un Administrador.", cancelacion);
+
+        // El codigo se emite DESPUES de cerrar las sesiones. Si el encolado del correo
+        // fallara, el usuario se quedaria sin poder entrar y sin saber por que, que es
+        // el peor de los dos desordenes posibles.
+        await EmitirCodigoAsync(db, usuario, urlBase, cancelacion);
     }
 
     /// <summary>
