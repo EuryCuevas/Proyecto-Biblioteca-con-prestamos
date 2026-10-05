@@ -109,6 +109,13 @@ builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .AddAuthenticationSchemes(EsquemaAutenticacion.Nombre)
+        // Este requisito es lo que hace que RequisitoDeOperacionHandler se ejecute en
+        // TODA acción que no sea [AllowAnonymous]. ASP.NET sólo invoca un handler si
+        // alguna política le pide su requisito, y sin esta línea ninguna lo pedía: el
+        // handler quedaba registrado y muerto, y la exigencia de rol de RF-CA-05 no
+        // se comprobaba en ninguna petición. El guard de arranque declaraba la
+        // operación y la política la conocía, pero nadie la evaluaba.
+        .AddRequirements(new RequisitoDeOperacion())
         .Build());
 
 builder.Services.AddControllers(opciones =>

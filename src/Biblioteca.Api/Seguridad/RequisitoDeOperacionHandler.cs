@@ -13,6 +13,9 @@ namespace Biblioteca.Api.Seguridad;
 /// Este componente es *glue* de ASP.NET, por eso vive en el host y no en la pieza de
 /// dominio. La decisión —qué roles exige cada operación— no está aquí: se lee en
 /// <see cref="PoliticaDeOperaciones"/>, dentro del Core (RF-CA-05).
+///
+/// Falla cerrado: si la acción no declara operación, o la política no la conoce, no
+/// se concede el requisito y el framework responde 403. Nunca «si no sé, dejo pasar».
 /// </summary>
 public sealed class RequisitoDeOperacionHandler : AuthorizationHandler<RequisitoDeOperacion>
 {
@@ -37,6 +40,14 @@ public sealed class RequisitoDeOperacionHandler : AuthorizationHandler<Requisito
         }
 
         var roles = PoliticaDeOperaciones.RolesDe(operacion);
+
+        if (roles.Count == 0)
+        {
+            // Operación declarada en el atributo pero ausente de la política: se
+            // rechaza. Declarar la operación y exigirle roles son la misma cosa, y si
+            // la segunda falla la primera no sirve de nada.
+            return Task.CompletedTask;
+        }
 
         if (roles.Any(rol => contexto.User.IsInRole(rol.ToString())))
         {
