@@ -8,6 +8,7 @@ using Biblioteca.Nucleo.Notificacion;
 using Biblioteca.Identidad;
 using Biblioteca.Identidad.Acceso;
 using Biblioteca.Identidad.Autorizacion;
+using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Entidades;
 using Biblioteca.Identidad.Persistencia;
 using Biblioteca.Identidad.Registro;
@@ -71,6 +72,11 @@ builder.Services.AddScoped<IServicioDeRegistro, ServicioDeRegistro>();
 // (RF-CA-03, RF-CA-07, RF-CA-18, RF-CA-19, RF-CA-15).
 // =============================================================================================
 builder.Services.AddScoped<IServicioDeAcceso, ServicioDeAcceso>();
+
+// Contraseñas: recuperación, restablecimiento y cambio propio. Va aparte del acceso
+// porque no se ocupa de abrir sesión, sino de lo que hace un usuario que ya no puede
+// (RF-CA-09, RF-CA-10).
+builder.Services.AddScoped<IServicioDeContrasenas, ServicioDeContrasenas>();
 
 // El hash de contraseña se inyecta, no se instancia dentro del servicio, para que las
 // pruebas puedan sustituirlo por uno rápido. El algoritmo por defecto es PBKDF2 con sal
