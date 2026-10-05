@@ -157,6 +157,43 @@ public sealed class UsuariosController(
     }
 
     /// <summary>
+    /// Cambia el rol de un usuario (RF-CA-08).
+    ///
+    /// Sustituye el rol anterior por el nuevo: todo usuario tiene exactamente uno
+    /// (RF-CA-04). Cierra las sesiones abiertas de ese usuario, porque el rol viaja
+    /// dentro de la credencial y una credencial emitida con el rol viejo no se
+    /// actualiza sola.
+    /// </summary>
+    /// <remarks>
+    /// El criterio dice que un Estándar no puede cambiar ningún rol, ni el propio; los
+    /// dos casos llegan aquí y los dos se rechazan antes de ejecutar nada, en la misma
+    /// comprobación que rechaza cualquier otra operación de Administrador. No hace
+    /// falta una regla especial para "el propio": la misma los cubre (RF-CA-06).
+    ///
+    /// Lo que el criterio NO dice —y por eso no se ha inventado— es que un
+    /// Administrador no pueda cambiarse el rol a sí mismo. A diferencia de RF-CA-20,
+    /// que prohíbe explícitamente la autodesactivación, aquí no hay tal prohibición: un
+    /// Administrador puede degradarse a Estándar, y le pasa lo mismo que a cualquier
+    /// otro cambio de rol, incluidas las sesiones abiertas que se le cierran.
+    /// </remarks>
+    [HttpPost("cambiar-rol")]
+    [RequiereOperacion(Operaciones.UsuariosCambiarRol)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> CambiarRol(
+        [FromBody] SolicitudCambioDeRol peticion,
+        CancellationToken cancelacion)
+    {
+        var resultado = await administracion.CambiarRolAsync(
+            peticion.UsuarioId, peticion.Rol, cancelacion);
+
+        return Ok(resultado);
+    }
+
+    /// <summary>
     /// Base pública donde vive el enlace del correo. La decide el host porque es quien
     /// conoce el esquema, el host y el puerto reales de esta petición.
     /// </summary>
@@ -171,3 +208,12 @@ public sealed record SolicitudReenvio(string Correo);
 
 /// <summary>Cuerpo de <c>POST /usuarios/restablecer-contrasena</c>.</summary>
 public sealed record SolicitudRestablecimientoAdmin(Guid UsuarioId);
+
+/// <summary>
+/// Cuerpo de <c>POST /usuarios/cambiar-rol</c>.
+///
+/// El rol llega como texto porque la configuración de JSON serializa los enums como
+/// cadenas en toda la API, y un endpoint que aceptara <c>0</c> y <c>1</c> en el mismo
+/// sitio donde el resto acepta <c>"Administrador"</c> sería una incoherencia.
+/// </summary>
+public sealed record SolicitudCambioDeRol(Guid UsuarioId, Rol Rol);
