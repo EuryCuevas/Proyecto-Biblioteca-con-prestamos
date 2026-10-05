@@ -173,7 +173,7 @@ Biblioteca.sln
 
 src/
   Biblioteca.Nucleo/          Transversal: errores tipados, puertos (auditoría, correo), configuración
-  Biblioteca.Identidad/       PIEZA 1 del Core. Usuario, sesión, roles, registro, contraseñas
+  Biblioteca.Identidad/       PIEZA 1 del Core. Usuario, sesión, acceso, roles, registro, contraseñas
   Biblioteca.Correo/          Cola de correo y entrega SMTP
   Biblioteca.Biblioteca/      MÓDULO DE NEGOCIO. Catálogo, socios, préstamos y sus relaciones
   Biblioteca.Api/             Host HTTP. Configuración, DI, migraciones, traducción de errores
@@ -545,7 +545,161 @@ prohibidas y que ninguna transición esté a la vez permitida y prohibida.
 
 La tabla completa, con el diagrama, está en [`docs/maquina-de-estados.md`](docs/maquina-de-estados.md).
 
-### 6.13 Registrar un usuario funciona con el SMTP apagado (RF-NOT-08)
+### 6.13 Iniciar sesión, consultar la identidad y cerrar sesión (RF-CA-03, 07, 18, 19)
+
+Tres endpoints, y son los tres que exige el enunciado para esta funcionalidad:
+
+| Método | Ruta | ¿Exige sesión? | Criterio |
+|---|---|---|---|
+| `POST` | `/sesion/iniciar` | No | RF-CA-03, RF-CA-15, RF-CA-19 |
+| `GET` | `/sesion/yo` | Sí | RF-CA-07 |
+| `POST` | `/sesion/cerrar` | Sí | RF-CA-18 |
+
+Arranca la API y ten a mano un usuario **activado** (la sección «Registrar y activar una
+cuenta, de extremo a extremo» explica cómo conseguirlo). En lo que sigue, `$clave` es la
+contraseña con la que lo activaste.
+
+#### a) Credenciales correctas abren sesión (RF-CA-03)
+
+```powershell
+$api = "http://localhost:5XXX"
+$sesion = Invoke-RestMethod "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com"; contrasena = $clave } | ConvertTo-Json)
+
+$sesion.token        # credencial de sesión, en claro
+$sesion.usuario.rol  # "Estandar"
+```
+
+La credencial también viene en la cabecera `Authorization: Bearer <token>` de la misma
+respuesta. **En la base sólo queda su SHA-256**:
+
+```sql
+SELECT CONVERT(VARCHAR(64), TokenHash, 2) AS TokenHashHex, CerradaEn FROM Sesion;
+```
+
+`TokenHash` es `BINARY(32)` y el valor en claro no aparece en ninguna fila.
+
+#### b) Credenciales incorrectas se rechazan **sin revelar cuál de los dos datos falló** (RF-CA-03)
+
+Ésta es la comprobación literal que pide el enunciado. Los dos rechazos tienen que ser
+**idénticos byte a byte**:
+
+```powershell
+$malClave = Invoke-WebRequest "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com"; contrasena = "ClaveEquivocada9" } | ConvertTo-Json) `
+    -SkipHttpErrorCheck
+
+$sinCorreo = Invoke-WebRequest "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "nadie@example.com"; contrasena = $clave } | ConvertTo-Json) `
+    -SkipHttpErrorCheck
+
+$malClave.StatusCode                      # 401
+$malClave.Content -eq $sinCorreo.Content   # True
+```
+
+El mensaje es siempre `Correo o contraseña incorrectos.` Un correo **mal formado** tampoco
+produce un error distinto: se rechaza con ese mismo mensaje.
+
+> **Por qué 401 y no 403.** 403 significa «sé quién eres pero no puedes», que es lo que
+> corresponde a un rol insuficiente. Una contraseña mal escrita es «no sé quién eres».
+> Por eso el núcleo distingue `TipoError.NoAutenticado` (401, con su cabecera
+> `WWW-Authenticate`) de `TipoError.NoAutorizado` (403).
+
+#### c) Consulta del usuario autenticado y su rol (RF-CA-07)
+
+```powershell
+Invoke-RestMethod "$api/sesion/yo" -Headers @{ Authorization = "Bearer $($sesion.token)" }
+```
+
+Devuelve `id`, `nombre`, `correo`, `rol` y `activo`. Sin sesión válida **se rechaza**:
+
+```powershell
+Invoke-WebRequest "$api/sesion/yo" -SkipHttpErrorCheck | Select-Object StatusCode  # 401
+```
+
+#### d) Cierre de sesión: la credencial cerrada deja de servir (RF-CA-18)
+
+```powershell
+$cabecera = @{ Authorization = "Bearer $($sesion.token)" }
+
+Invoke-WebRequest "$api/sesion/cerrar" -Method Post -Headers $cabecera -SkipHttpErrorCheck |
+    Select-Object StatusCode                                                      # 204
+
+# La MISMA credencial, usada otra vez:
+Invoke-WebRequest "$api/sesion/yo" -Headers $cabecera -SkipHttpErrorCheck |
+    Select-Object StatusCode                                                      # 401
+```
+
+Y en la base, la fila queda marcada como cerrada (esto es lo que invalida la credencial):
+
+```sql
+SELECT CerradaEn, MotivoCierre FROM Sesion ORDER BY CreadaEn DESC;
+```
+
+#### e) Bloqueo tras cinco intentos fallidos consecutivos (RF-CA-19)
+
+```powershell
+1..5 | ForEach-Object {
+    Invoke-WebRequest "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+        -Body (@{ correo = "ana@example.com"; contrasena = "ClaveEquivocada9" } | ConvertTo-Json) `
+        -SkipHttpErrorCheck | Out-Null
+}
+
+# El sexto intento, con la contraseña CORRECTA, también se rechaza:
+Invoke-WebRequest "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com"; contrasena = $clave } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode                                  # 401
+```
+
+Los cinco intentos fallidos responden `Correo o contraseña incorrectos.`; a partir del
+sexto, el mensaje pasa a ser `Cuenta bloqueada por intentos fallidos. Inténtalo de nuevo
+a las HH:mm (UTC).` El estado queda así:
+
+```sql
+SELECT Correo, Activo, IntentosFallidos, BloqueadoHasta FROM Usuario;
+```
+
+| `IntentosFallidos` | `BloqueadoHasta` | Qué significa |
+|---|---|---|
+| 0 | `NULL` | Sin historial. Un inicio de sesión correcto lo deja aquí. |
+| 1 a 4 | `NULL` | Todavía quedan intentos. |
+| 5 | una fecha | Bloqueada 15 minutos (`OpcionesCorreo:MinutosBloqueo`). |
+
+Cuando el bloqueo **vence**, el contador vuelve a cero: si no, un solo fallo posterior
+volvería a bloquear la cuenta y el usuario nunca podría entrar. Para verlo sin esperar
+15 minutos:
+
+```sql
+UPDATE Usuario SET BloqueadoHasta = DATEADD(MINUTE, -1, SYSUTCDATETIME()) WHERE Correo = 'ana@example.com';
+```
+
+Con el bloqueo ya vencido, la contraseña correcta entra y el contador queda a cero:
+
+```powershell
+Invoke-RestMethod "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com"; contrasena = $clave } | ConvertTo-Json) |
+    Select-Object -ExpandProperty usuario
+```
+
+Y un fallo posterior **no** vuelve a bloquear la cuenta: quedan cinco intentos nuevos.
+
+> **Una tensión que conviene conocer.** RF-CA-03 pide no revelar cuál de los dos datos
+> falló, y RF-CA-19 pide decir que la cuenta está bloqueada. Son contradictorias: el
+> mensaje de bloqueo sólo existe si la cuenta existe. Aquí se cumplen las dos, y se
+> acepta que el bloqueo revele la existencia de la cuenta — es lo que el enunciado pide
+> literalmente. Donde sí se cierra la enumeración es en RF-CA-15: el mensaje «la cuenta
+> no está activa» **sólo** aparece si la contraseña es correcta.
+
+```powershell
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~SesionTests"
+```
+
+Las 21 pruebas cubren los cinco puntos de arriba de extremo a extremo: no se simula nada,
+se habla HTTP contra la aplicación real y se comprueba la base.
+
+
+
+### 6.14 Registrar un usuario funciona con el SMTP apagado (RF-NOT-08)
 
 **Ésta es la prueba clave de la cola de correo.**
 
@@ -562,7 +716,7 @@ FROM CorreoEnCola ORDER BY CreadoEn DESC;
 
 `Estado` debe ser `Pendiente` y `FechaEnvio` debe ser `NULL`.
 
-### 6.14 El emisor de correo es un proceso aparte (RF-NOT-09)
+### 6.15 El emisor de correo es un proceso aparte (RF-NOT-09)
 
 ```powershell
 dotnet run --project tools/Biblioteca.Correo.Enviador
@@ -576,7 +730,7 @@ info     Correo <guid> entregado.
 info     Proceso terminado. Enviados: 1. Con fallo: 0
 ```
 
-### 6.15 Ejecutar el emisor dos veces no duplica correos (RF-NOT-12)
+### 6.16 Ejecutar el emisor dos veces no duplica correos (RF-NOT-12)
 
 ```powershell
 dotnet run --project tools/Biblioteca.Correo.Enviador
@@ -596,7 +750,7 @@ SELECT Estado, COUNT(*) FROM CorreoEnCola GROUP BY Estado;
 
 Un correo enviado **no** aparece como `Pendiente` en la segunda ejecución.
 
-### 6.16 El emisor se puede ejecutar sin que el proceso que encoló siga vivo
+### 6.17 El emisor se puede ejecutar sin que el proceso que encoló siga vivo
 
 1. Registra un usuario con el SMTP apagado. El correo queda `Pendiente`.
 2. Cierra la API por completo.
@@ -606,7 +760,7 @@ Un correo enviado **no** aparece como `Pendiente` en la segunda ejecución.
 El correo se envía. **Esto es lo que prueba RF-NOT-09**: el envío no depende del flujo
 que creó el correo.
 
-### 6.17 Los fallos internos no se filtran (RD-08)
+### 6.18 Los fallos internos no se filtran (RD-08)
 
 ```powershell
 Invoke-RestMethod http://localhost:5XXX/usuarios -Headers @{ Authorization = "Bearer token-invalido" } -ErrorAction SilentlyContinue
@@ -634,9 +788,16 @@ nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 | **RF-CA-17** — reenvío sin revelar correos | `ServicioDeRegistro.ReenviarActivacionAsync` |
 | **RF-CA-01/02/14/15/16/17** — las tres acciones | `src/Biblioteca.Api/Controllers/UsuariosController.cs` |
 | **RF-CA-01/02/14/15/16/17** — comprobación automática | `tests/Biblioteca.Api.Tests/RegistroYActivacionTests.cs` (19 pruebas) |
-| RF-CA-12 / 18 / 20 — revocación | `ServicioDeSesiones.CerrarTodasAsync` |
+| **RF-CA-03** — inicio de sesión | `ServicioDeAcceso.AutenticarAsync` + `SesionController.Iniciar` |
+| RF-CA-03 — rechazo que no revela qué falló | `ServicioDeAcceso.CredencialesInvalidas` + hash señuelo por temporización |
+| RF-CA-03 — 401 y no 403 | `TipoError.NoAutenticado` → `ManejadorDeExcepciones` |
+| **RF-CA-07** — consulta del autenticado | `GET /sesion/yo` + `ServicioDeAcceso.ConsultarYoAsync` |
+| RF-CA-15 / 16 — token de activación | `TokenActivacion` + `GeneradorDeSecretos` |
+| **RF-CA-15** — la cuenta inactiva no entra | `ServicioDeAcceso.AutenticarAsync`, comprobado **después** de la contraseña |
+| **RF-CA-18** — el cierre es efectivo | `SesionController.Cerrar` → `IServicioDeSesiones.CerrarAsync` |
+| RF-CA-12 / 18 / 20 — revocación | `IServicioDeSesiones.CerrarAsync` / `.CerrarTodasAsync` |
+| **RF-CA-19** — bloqueo tras 5 intentos | `ServicioDeAcceso.AutenticarAsync` + `Usuario.IntentosFallidos` / `BloqueadoHasta` |
 | RF-CA-10 — código de recuperación | `CodigoRecuperacion` |
-| RF-CA-19 — bloqueo tras 5 intentos | `Usuario.IntentosFallidos` + `Usuario.BloqueadoHasta` |
 | **RF-NOT-08** — encolar, no enviar | `EncolaCorreo` + puerto `IEncolaCorreo` (que vive en el Core, §4) |
 | **RF-NOT-09** — envío en proceso aparte | `tools/Biblioteca.Correo.Enviador` |
 | **RF-NOT-12** — sin envíos duplicados | `SmtpEntregador.EntregarAsync` (reclamo condicional) |
@@ -683,16 +844,19 @@ Para que quede claro que es alcance, y no omisión:
 | `POST` | `/usuarios/registro` | Ninguna | Alta de cuenta; queda inactiva hasta abrir el enlace |
 | `GET` | `/usuarios/activar?token=…` | Ninguna | Apertura del enlace de un solo uso |
 | `POST` | `/usuarios/reenviar-activacion` | Ninguna | Reenvío del enlace, sin revelar qué correos existen |
+| `POST` | `/sesion/iniciar` | Ninguna | Inicia sesión y entrega la credencial (RF-CA-03, 15, 19) |
+| `GET` | `/sesion/yo` | Credencial de sesión | Usuario autenticado y su rol (RF-CA-07) |
+| `POST` | `/sesion/cerrar` | Credencial de sesión | Cierra la sesión e invalida la credencial (RF-CA-18) |
 
-Las tres acciones de registro son públicas a propósito: todavía no hay identidad que
-exigir. Es el mismo tratamiento que recibe `/salud` en el guard de arranque
-(`ValidarOperacionesDeclaradasConvention` exceptúa las acciones `[AllowAnonymous]`), y no
-es una excepción a RF-CA-05 sino su caso honesto. Todas las demás acciones del sistema
-siguen declarando su operación.
+Las tres acciones de registro y `POST /sesion/iniciar` son públicas a propósito: todavía no
+hay identidad que exigir. Es el mismo tratamiento que recibe `/salud` en el guard de
+arranque (`ValidarOperacionesDeclaradasConvention` exceptúa las acciones
+`[AllowAnonymous]`), y no es una excepción a RF-CA-05 sino su caso honesto. Todas las demás
+acciones del sistema siguen declarando su operación.
 
-El resto de los endpoints de la pieza 1 (inicio de sesión, cambio de contraseña,
-recuperación, administración de usuarios) llega en los siguientes *pull requests*. Cada
-uno se documenta aquí con su criterio de aceptación, en la sección 6.
+Los endpoints de la pieza 1 que faltan (cambio de contraseña, recuperación, administración
+de usuarios) llegan en los siguientes *pull requests*. Cada uno se documenta aquí con su
+criterio de aceptación, en la sección 6.
 
 ### Pruebas
 
@@ -702,8 +866,8 @@ dotnet test Biblioteca.sln
 
 | Serie | Pruebas | Qué cubren |
 |---|---:|---|
-| `Biblioteca.Nucleo.Tests` | 9 | Tipos de error, contrato de auditoría |
+| `Biblioteca.Nucleo.Tests` | 10 | Tipos de error, contrato de auditoría |
 | `Biblioteca.Identidad.Tests` | 44 | Política de operaciones (RF-CA-05), guard de arranque, contraseñas (RF-CA-14), generación de tokens |
 | `Biblioteca.Biblioteca.Tests` | 32 | Estructura de la máquina de estados (RF-NEG-03/04/05) y relaciones del modelo de datos (RF-NEG-01, RD-03) |
-| `Biblioteca.Api.Tests` | 26 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, y registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17) |
-| **Total** | **111** | |
+| `Biblioteca.Api.Tests` | 47 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17) y sesión de extremo a extremo (RF-CA-03, 07, 18, 19) |
+| **Total** | **133** | |
