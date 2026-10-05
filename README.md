@@ -469,10 +469,12 @@ Select-String -Path src\Biblioteca.Api\Program.cs -Pattern "AddRequirements"
 ```
 
 Y el extremo que de verdad importa —un Estándar contra un endpoint de Administrador, con la
-petición escrita a mano— está en `RecuperacionDeContrasenaTests` (§6.14):
+petición escrita a mano— está en `RecuperacionDeContrasenaTests` (§6.14) y, con las cuatro
+operaciones de administración barreadas de una vez, en `AdministracionDeUsuariosTests` (§6.20):
 
 ```powershell
 dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~Un_estandar_recibe_403"
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~Un_estandar_recibe_403_en_cada"
 ```
 
 > Esa prueba existe porque este requisito fallaba. `RequisitoDeOperacionHandler` estaba
@@ -1001,6 +1003,244 @@ Invoke-RestMethod http://localhost:5XXX/usuarios -Headers @{ Authorization = "Be
 La respuesta debe ser un `ProblemDetails` **sin** traza de pila, sin ruta de archivo, sin
 nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 
+### 6.20 Administrar usuarios: listado, cambio de rol y desactivación (RF-CA-04, 05, 06, 08, 20, 21)
+
+Cuatro endpoints, todos reservados al Administrador:
+
+| Método | Ruta | Criterio |
+|---|---|---|
+| `GET` | `/usuarios` | RF-CA-21, RF-CA-04 |
+| `POST` | `/usuarios/cambiar-rol` | RF-CA-08, RF-CA-04 |
+| `POST` | `/usuarios/desactivar` | RF-CA-20 |
+| `POST` | `/usuarios/reactivar` | RF-CA-20 |
+
+**No hay endpoint para crear al primer Administrador**, y es deliberado: un endpoint que
+promoviera a Administrador sería una vía para que cualquiera se autoasignara el rol. El primer
+Administrador se nombra sobre la base, una vez, y a partir de ahí ya se usa la API:
+
+```sql
+UPDATE Usuario SET Rol = 'Administrador' WHERE Correo = 'ana@example.com';
+```
+
+En lo que sigue, `$admin` es la sesión de un Administrador y `$socio` la de un Estándar, las dos
+con §6.11 y §6.13 explican cómo tenerlas:
+
+```powershell
+$api = "http://localhost:5XXX"
+$admin = Invoke-RestMethod "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "ana@example.com"; contrasena = $clave } | ConvertTo-Json)
+$socio = Invoke-RestMethod "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "beto@example.com"; contrasena = $clave } | ConvertTo-Json)
+$socioId = $socio.usuario.id
+```
+
+#### a) El listado muestra el rol y el estado, y no expone hashes ni tokens (RF-CA-21)
+
+```powershell
+$cuerpo = (Invoke-WebRequest "$api/usuarios" -Headers @{ Authorization = "Bearer $($admin.token)" }).Content
+($cuerpo | ConvertFrom-Json) | Select-Object correo, rol, activo, creadoEn
+```
+
+Cada fila trae exactamente siete campos: `id`, `nombre`, `correo`, `rol`, `activo`, `creadoEn` y
+`passwordCambiadoEn`. No hay ningún campo de hash, token ni código, y no es que se filtren: el
+listado se proyecta en SQL a un `record ResumenDeUsuario` que no los tiene, así que
+`PasswordHash` ni siquiera llega a salir de la base. Para verlo en la respuesta completa:
+
+```powershell
+$cuerpo -match "hash"      # False
+$cuerpo -match "token"     # False
+```
+
+Y para verlo en la base, al lado de un usuario normal:
+
+```sql
+SELECT TOP 1 Correo, LEN(PasswordHash) AS LongitudDelHash FROM Usuario ORDER BY CreadoEn DESC;
+```
+
+Un Estándar recibe **403**, incluso con la petición escrita a mano (RF-CA-06, RD-06):
+
+```powershell
+Invoke-WebRequest "$api/usuarios" -Headers @{ Authorization = "Bearer $($socio.token)" } `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 403
+```
+
+#### b) Un Estándar no cambia ningún rol, ni el suyo (RF-CA-08)
+
+Las dos frases del criterio son la misma comprobación. En cuanto se declara la operación
+`UsuariosCambiarRol`, que `PoliticaDeOperaciones` reserva al Administrador (§6.10), las dos
+peticiones mueren en el guard **antes de tocar nada**:
+
+```powershell
+# Su propio rol:
+Invoke-WebRequest "$api/usuarios/cambiar-rol" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($socio.token)" } `
+    -Body (@{ usuarioId = $socioId; rol = "Administrador" } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 403
+
+# El de otro:
+Invoke-WebRequest "$api/usuarios/cambiar-rol" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($socio.token)" } `
+    -Body (@{ usuarioId = $usuarioId; rol = "Administrador" } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 403
+```
+
+No hay ninguna regla especial para «el propio». La misma los cubre a los dos, que es lo que
+pide el criterio: que el rechazo no dependa de a quién se dirige.
+
+#### c) Un Administrador cambia el rol (RF-CA-08, RF-CA-04)
+
+```powershell
+Invoke-RestMethod "$api/usuarios/cambiar-rol" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($admin.token)" } `
+    -Body (@{ usuarioId = $socioId; rol = "Administrador" } | ConvertTo-Json)
+# {"usuarioId":"...","rolAnterior":"Estandar","rolNuevo":"Administrador","sesionesCerradas":1}
+```
+
+Una cosa que conviene mirar después:
+
+```powershell
+Invoke-WebRequest "$api/usuarios" -Headers @{ Authorization = "Bearer $($socio.token)" } `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 401: su credencial lleva
+                                                            # el rol viejo dentro
+```
+
+La credencial de `$socio` **deja de servir**, y por dos motivos distintos según hacia dónde
+fuese el cambio: un Estándar ascendido necesitaría entrar otra vez para que su credencial
+reflejara el ascenso, y un Administrador degradado conservaría el acceso a la administración
+hasta que venciera su credencial, que es un agujero de seguridad. Cerrar las sesiones evita las
+dos cosas. Por eso la respuesta dice cuántas se han cerrado.
+
+El rol **sustituye** al anterior, no se añade al lado. «Todo usuario tiene exactamente un rol»
+(RF-CA-04) no es una promesa del código: es una consecuencia de la forma de la operación,
+porque no existe el camino que deje dos. El enum tiene exactamente dos valores, y una prueba
+comprueba que todo valor del enum tiene sitio en la política de operaciones:
+
+```powershell
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~AdministracionDeUsuariosTests"
+```
+
+Un rol que no existe se rechaza con **422** y el motivo de la pieza, no con el 400 opaco de la
+deserialización:
+
+```powershell
+Invoke-WebRequest "$api/usuarios/cambiar-rol" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($admin.token)" } `
+    -Body (@{ usuarioId = $socioId; rol = "Superusuario" } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 422
+```
+
+Los tres rechazos del endpoint usan la misma distinción, y conviene tenerla presente porque
+**«ese rol no existe» y «el cuerpo está mal escrito» no son lo mismo**:
+
+| Cuerpo | Código | Por qué |
+|---|---|---|
+| `{"rol": "Superusuario"}` | **422** | La forma es correcta; el rol que nombra no existe |
+| `{"rol": 7}` | **400** | El campo es un nombre de rol, no un número |
+| `{}` | **400** | Falta un campo obligatorio |
+
+Un 7 no es un rol escrito de otra manera, es otra cosa. Con el enum en la firma del cuerpo, las
+dos primeras filas devolvían el mismo 400 de «no se pudo convertir», acompañado además de que
+falta el cuerpo entero —porque al fallar el enlace el resto del modelo queda en `null`—, que es un
+mensaje que no habla de un rol inexistente. El campo es texto ahora y lo traduce la acción, que
+es lo que le toca al host (RD-02); decidir qué roles existen sigue siendo de la pieza
+(`Enum.IsDefined` en `CambiarRolAsync`).
+
+Cambiar un usuario a un rol que ya tiene también da 422, y **no le cierra las sesiones**: un
+cambio que no cambia nada no debe expulsar a nadie.
+
+#### d) Desactivar y reactivar (RF-CA-20)
+
+El criterio tiene tres partes y las tres se comprueban aquí:
+
+```powershell
+# 1. Desactivar. Responde cuántas sesiones se han cerrado.
+Invoke-RestMethod "$api/usuarios/desactivar" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($admin.token)" } `
+    -Body (@{ usuarioId = $socioId } | ConvertTo-Json)
+# {"usuarioId":"...","activo":false,"sesionesCerradas":1}
+
+# 2. La sesión que ya estaba abierta deja de servir.
+Invoke-WebRequest "$api/sesion/yo" -Headers @{ Authorization = "Bearer $($socio.token)" } `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 401
+
+# 3. Y tampoco puede iniciar sesión otra vez.
+Invoke-WebRequest "$api/sesion/iniciar" -Method Post -ContentType "application/json" `
+    -Body (@{ correo = "beto@example.com"; contrasena = $clave } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 401
+```
+
+Y un Administrador **no puede desactivarse a sí mismo**, que es la tercera frase del criterio:
+
+```powershell
+Invoke-WebRequest "$api/usuarios/desactivar" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($admin.token)" } `
+    -Body (@{ usuarioId = $admin.usuario.id } | ConvertTo-Json) `
+    -SkipHttpErrorCheck | Select-Object StatusCode        # 422
+```
+
+Es **422 y no 403**, y la diferencia es el fondo: el que llama está autorizado, y es el único
+que puede hacer esto a cualquiera. Lo que no puede es aplicar el signo de menos sobre su
+propia cuenta. Con 403 se le diría «no estás autorizado», que es falso.
+
+La comprobación vive en el servicio, no en el endpoint, y el identificador de quien llama sale
+del claim que escribió el autenticador, nunca del cuerpo de la petición: si fuera un parámetro,
+la única comprobación de seguridad del sistema dependería de un dato que elige el cliente.
+
+Reactivar es el camino de vuelta, y **no devuelve las sesiones anteriores**: el usuario tiene
+que entrar otra vez.
+
+```powershell
+Invoke-RestMethod "$api/usuarios/reactivar" -Method Post -ContentType "application/json" `
+    -Headers @{ Authorization = "Bearer $($admin.token)" } `
+    -Body (@{ usuarioId = $socioId } | ConvertTo-Json)
+# {"usuarioId":"...","activo":true,"sesionesCerradas":0}
+```
+
+> **Reactivar no levanta el bloqueo por cinco intentos fallidos (RF-CA-19).** Desactivar y
+> bloquear son dos cosas distintas, y reactivar no promete la segunda: el bloqueo expira solo a
+> los quince minutos. Hay una prueba que lo fija, con un usuario de control que sí puede entrar
+> después de reactivarlo — sin ese control, la comprobación no probaría nada.
+
+> **La cuenta desactivada se rechaza en cada petición, no sólo al iniciar sesión.** El
+> autenticador comprueba `Usuario.Activo` cada vez que resuelve una credencial, además de que
+> desactivar cierre las sesiones. Es la segunda red: si alguien desactiva una cuenta por un
+> camino que no pase por el servicio (SQL, una consola de soporte, un endpoint futuro), la
+> credencial sigue sin servir. Antes de este *pull request* el comentario del propio
+> autenticador ya prometía esa comprobación y el código no la hacía.
+
+#### Comprobación automática
+
+```powershell
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~AdministracionDeUsuariosTests"
+```
+
+Las 29 pruebas hablan HTTP contra la aplicación real y miran la base de verdad. Las que más
+importan son las de rechazo: las cuatro operaciones de administración se barren con un Estándar
+—con la petición construida a mano, sin los ayudantes del cliente—, sin credencial y con una
+credencial cerrada. Son las que vigilan el hilo de §6.10.
+
+> **Un fallo que estas pruebas destaparon.** El proyecto tenía
+> `ConfigureHttpJsonOptions(... Add(new JsonStringEnumConverter()))`, que configura el
+> serializador de las APIs mínimas y de `HttpResponse.Json`, **no** el de los controladores. Como
+> todas las respuestas de esta API salen de controladores, esa línea no hacía nada. El síntoma era
+> que `POST /usuarios/cambiar-rol` con `{"rol": "Administrador"}` devolvía 400, y el listado
+> devolvía `"rol": 0` mientras `/sesion/iniciar` devolvía `"rol": "Estandar"`: dos endpoints con
+> el mismo enum, de dos maneras distintas, en la misma API. El converter se movió a
+> `AddJsonOptions`. Es el tercer caso de la misma familia que §6.10 y que el autenticador: código
+> que no hace lo que su comentario o su configuración prometen. Los tres se encontraron **escribiendo
+> las pruebas** de este *pull request*, no leyendo el código con calma.
+
+#### Qué NO incluye
+
+- **Que un Administrador no pueda degradarse a sí mismo.** El enunciado lo prohíbe
+  explícitamente para desactivar (RF-CA-20) y **no** lo dice para cambiar el rol (RF-CA-08). La
+  asimetría es del enunciado, no un descuido, y no se inventa una regla que no está escrita. Si
+  algún día se pide, es una comprobación en `CambiarRolAsync`, igual que la de
+  autodesactivación.
+- **Auditoría de quién cambió el rol de quién y cuándo.** Es materia de la semana 14, pieza 6
+  (ver §8). El sitio es `ServicioDeAdministracion`, que ya recibe el `actorId` en desactivar y
+  donde habrá que añadirlo en los otros dos métodos.
+
 ---
 
 ## 7. Dónde está cada cosa
@@ -1012,6 +1252,20 @@ nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 | **RF-CA-05** — un solo punto de exigencia de rol | `src/Biblioteca.Identidad/PoliticaDeOperaciones.cs` |
 | RF-CA-05 — que no se pueda saltar | `src/Biblioteca.Api/Seguridad/ValidarOperacionesDeclaradasConvention.cs` |
 | RF-CA-05 — que la exigencia de rol se evalúe de verdad | `RequisitoDeOperacion`, en la política de repliego de `Program.cs` + `RequisitoDeOperacionHandler` (§6.10) |
+| RF-CA-04 — dos roles, y todo usuario tiene exactamente uno | `Rol` (enum de dos valores) + `ServicioDeAdministracion.CambiarRolAsync`, que **sustituye** el rol |
+| RF-CA-04 — que ningún rol quede fuera de la tabla | `PoliticaDeOperaciones.Requisitos` + prueba `Todo_rol_del_enum_aparece_en_la_politica_de_operaciones` |
+| **RF-CA-06 / RD-06** — el Estándar recibe un rechazo explícito | `[RequiereOperacion]` en la acción + `RequisitoDeOperacionHandler`, evaluado en la política de repliego (§6.10, §6.20) |
+| **RF-CA-21** — el listado con rol y estado | `GET /usuarios` + `ServicioDeAdministracion.ListarAsync`, proyectado a `ResumenDeUsuario` en SQL |
+| RF-CA-21 — el listado nunca lleva hashes ni tokens | `ResumenDeUsuario` no tiene ningún campo de ese tipo, y la proyección ocurre en SQL: `PasswordHash` no sale de la base |
+| **RF-CA-08** — cambio de rol, sólo Administrador | `ServicioDeAdministracion.CambiarRolAsync` + `POST /usuarios/cambiar-rol` |
+| RF-CA-08 — ni el propio ni el ajeno | El guard rechaza antes de ejecutar; no hace falta una regla aparte (§6.20b) |
+| RF-CA-08 — el rol de la credencial no se queda viejo | `IServicioDeSesiones.CerrarTodasAsync` en el mismo cambio, con el mismo contexto |
+| **RF-CA-20** — desactivar y reactivar | `ServicioDeAdministracion.DesactivarAsync` / `.ReactivarAsync` + `POST /usuarios/desactivar` y `/reactivar` |
+| RF-CA-20 — la cuenta inactiva no entra | `ServicioDeAcceso.AutenticarAsync`, comprobado **después** de la contraseña |
+| RF-CA-20 — sus credenciales dejan de servir | `IServicioDeSesiones.CerrarTodasAsync` **y** la revalidación de `Usuario.Activo` en `AutenticacionPorSesion`, en cada petición |
+| RF-CA-20 — no se puede desactivar a sí mismo | `DesactivarAsync`, con el `actorId` que sale del claim, no del cuerpo (§6.20d) |
+| **RF-CA-04 / 06 / 08 / 20 / 21** — las cuatro acciones | `UsuariosController.Listar` / `.CambiarRol` / `.Desactivar` / `.Reactivar` |
+| **RF-CA-04 / 06 / 08 / 20 / 21** — comprobación automática | `tests/Biblioteca.Api.Tests/AdministracionDeUsuariosTests.cs` (29 pruebas) |
 | RF-CA-02 — hash con sal por usuario | `PasswordHasher<Usuario>`, inyectado en `ServicioDeRegistro` (decisión en `docs/diseno-de-componentes.md`, §4.5) |
 | RF-CA-14 — política de contraseñas | `src/Biblioteca.Identidad/Password/PoliticaDeContrasenas.cs` |
 | RF-CA-01 — correo único | Índice `UQ_Usuario_Correo`, aplicado en `IdentidadDbContext.cs` |
@@ -1095,6 +1349,10 @@ Para que quede claro que es alcance, y no omisión:
 | `POST` | `/contrasenas/restablecer` | Ninguna | Define la contraseña con el código y cierra las sesiones (RF-CA-11, 12) |
 | `POST` | `/contrasenas/propia` | Credencial de sesión | Cambia la contraseña indicando la actual (RF-CA-22) |
 | `POST` | `/usuarios/restablecer-contrasena` | Credencial de sesión, rol Administrador | Restablecimiento forzado; mata la contraseña anterior (RF-CA-13) |
+| `GET` | `/usuarios` | Credencial de sesión, rol Administrador | Lista los usuarios con su rol y su estado, sin hashes ni tokens (RF-CA-21) |
+| `POST` | `/usuarios/cambiar-rol` | Credencial de sesión, rol Administrador | Sustituye el rol de un usuario y cierra sus sesiones (RF-CA-08) |
+| `POST` | `/usuarios/desactivar` | Credencial de sesión, rol Administrador | Desactiva la cuenta y mata sus credenciales (RF-CA-20) |
+| `POST` | `/usuarios/reactivar` | Credencial de sesión, rol Administrador | Reactiva la cuenta; no devuelve sus sesiones ni levanta el bloqueo (RF-CA-20) |
 
 Las tres acciones de registro, `POST /sesion/iniciar` y las tres de recuperación son públicas
 a propósito: todavía no hay identidad que exigir. Es el mismo tratamiento que recibe `/salud`
@@ -1102,8 +1360,10 @@ en el guard de arranque (`ValidarOperacionesDeclaradasConvention` exceptúa las 
 `[AllowAnonymous]`), y no es una excepción a RF-CA-05 sino su caso honesto. Todas las demás
 acciones del sistema siguen declarando su operación **y son evaluadas en cada petición** (§6.10).
 
-Lo único que queda de la pieza 1 es la administración de usuarios (RF-CA-04, 05, 06, 08, 20 y
-21), y llega en el siguiente *pull request* con sus propias pruebas de 403.
+**No hay endpoint para crear al primer Administrador.** Un endpoint que promoviera a
+Administrador sería la vía más corta para que cualquiera se autoasignara el rol, así que el
+primer Administrador se nombra una vez sobre la base (§6.20) y a partir de ahí se usa `POST
+/usuarios/cambiar-rol`.
 
 ### Pruebas
 
@@ -1116,5 +1376,5 @@ dotnet test Biblioteca.sln
 | `Biblioteca.Nucleo.Tests` | 10 | Tipos de error, contrato de auditoría |
 | `Biblioteca.Identidad.Tests` | 44 | Política de operaciones (RF-CA-05), guard de arranque, contraseñas (RF-CA-14), generación de tokens |
 | `Biblioteca.Biblioteca.Tests` | 32 | Estructura de la máquina de estados (RF-NEG-03/04/05) y relaciones del modelo de datos (RF-NEG-01, RD-03) |
-| `Biblioteca.Api.Tests` | 78 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17), sesión de extremo a extremo (RF-CA-03, 07, 18, 19) y contraseñas de extremo a extremo (RF-CA-09, 10, 11, 12, 13, 22) |
-| **Total** | **164** | |
+| `Biblioteca.Api.Tests` | 107 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17), sesión de extremo a extremo (RF-CA-03, 07, 18, 19), contraseñas de extremo a extremo (RF-CA-09, 10, 11, 12, 13, 22) y administración de usuarios de extremo a extremo (RF-CA-04, 06, 08, 20, 21) |
+| **Total** | **193** | |
