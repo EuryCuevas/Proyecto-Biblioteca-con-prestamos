@@ -3,6 +3,7 @@ using System.Net.Mail;
 using Biblioteca.Correo.Entidades;
 using Biblioteca.Correo.Persistencia;
 using Biblioteca.Nucleo.Configuracion;
+using Biblioteca.Nucleo.Notificacion;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 

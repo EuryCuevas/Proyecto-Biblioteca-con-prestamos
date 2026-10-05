@@ -4,13 +4,17 @@ using Biblioteca.Api.Seguridad;
 using Biblioteca.Biblioteca.Persistencia;
 using Biblioteca.Correo;
 using Biblioteca.Correo.Persistencia;
+using Biblioteca.Nucleo.Notificacion;
 using Biblioteca.Identidad;
 using Biblioteca.Identidad.Autorizacion;
+using Biblioteca.Identidad.Entidades;
 using Biblioteca.Identidad.Persistencia;
+using Biblioteca.Identidad.Registro;
 using Biblioteca.Identidad.Sesiones;
 using Biblioteca.Nucleo.Auditoria;
 using Biblioteca.Nucleo.Configuracion;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -53,6 +57,16 @@ builder.Services.AddSingleton(TimeProvider.System);
 // sólo traduce HTTP en llamadas a este servicio (RD-02).
 // =============================================================================================
 builder.Services.AddScoped<IServicioDeSesiones, ServicioDeSesiones>();
+
+// =============================================================================================
+// Registro y activación (RF-CA-01, 02, 14, 15, 16, 17). La pieza decide; el host traduce.
+// =============================================================================================
+builder.Services.AddScoped<IServicioDeRegistro, ServicioDeRegistro>();
+
+// El hash de contraseña se inyecta, no se instancia dentro del servicio, para que las
+// pruebas puedan sustituirlo por uno rápido. El algoritmo por defecto es PBKDF2 con sal
+// propia del usuario: es el que garantiza RF-CA-02 sin que escribamos criptografía a mano.
+builder.Services.AddScoped<IPasswordHasher<Usuario>, PasswordHasher<Usuario>>();
 
 // =============================================================================================
 // Correo: se registra únicamente el puerto. La implementación escribe en la cola y NO
