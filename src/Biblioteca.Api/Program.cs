@@ -26,8 +26,17 @@ var builder = WebApplication.CreateBuilder(args);
 // Configuración. Las credenciales llegan por variables de entorno; nunca están en
 // appsettings.json ni en el repositorio (RD-10, RF-NOT-13).
 // =============================================================================================
-builder.Services.Configure<OpcionesCorreo>(
-    builder.Configuration.GetSection(OpcionesCorreo.Seccion));
+builder.Services
+    .AddOptions<OpcionesCorreo>()
+    .Bind(builder.Configuration.GetSection(OpcionesCorreo.Seccion))
+    // La base pública de los enlaces del correo es un dato de despliegue, no un dato de
+    // la petición. Se exige al arrancar para que una instalación sin configurar falle
+    // donde se arregla —la configuración— y no más tarde, con un enlace roto ya enviado.
+    .Validate(
+        opciones => Uri.TryCreate(opciones.UrlBasePublica, UriKind.Absolute, out _),
+        "Falta una base publica valida para los enlaces del correo. Defina la variable de " +
+        "entorno Correo__UrlBasePublica, por ejemplo https://biblioteca.ejemplo.test (RD-10).")
+    .ValidateOnStart();
 
 // =============================================================================================
 // Persistencia: un contexto por pieza, con el proveedor SQL Server registrado sólo en el

@@ -25,7 +25,18 @@ public sealed class OpcionesCorreo
 
     public string Remitente { get; init; } = string.Empty;
 
+    /// <summary>
+    /// Base pública absoluta donde viven los enlaces que van en el correo (activación y
+    /// recuperación), por ejemplo <c>https://biblioteca.ejemplo.test</c>. Se lee de
+    /// configuración —<c>Correo__UrlBasePublica</c>— y NO se deduce de la petición:
+    /// detrás de un proxy inverso el esquema y el host que ve el proceso son los internos,
+    /// y el enlace tiene que funcionar fuera de la petición que lo originó. Sin ella la
+    /// aplicación no arranca.
+    /// </summary>
+    public string UrlBasePublica { get; init; } = string.Empty;
+
     /// <summary>Longitud en minutos de la validez de un enlace o código de un solo uso.</summary>
+
     public int MinutosValidezToken { get; init; } = 30;
 
     /// <summary>Minutos de bloqueo tras agotar los intentos fallidos (RF-CA-19).</summary>
