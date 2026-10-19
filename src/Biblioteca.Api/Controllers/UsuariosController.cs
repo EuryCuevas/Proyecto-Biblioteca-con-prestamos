@@ -4,9 +4,11 @@ using Biblioteca.Identidad.Administracion;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Contrasenas;
 using Biblioteca.Identidad.Registro;
+using Biblioteca.Nucleo.Configuracion;
 using Biblioteca.Nucleo.Errores;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Biblioteca.Api.Controllers;
 
@@ -30,8 +32,11 @@ namespace Biblioteca.Api.Controllers;
 public sealed class UsuariosController(
     IServicioDeRegistro registro,
     IServicioDeContrasenas contrasenas,
-    IServicioDeAdministracion administracion) : ControllerBase
+    IServicioDeAdministracion administracion,
+    IOptions<OpcionesCorreo> opciones) : ControllerBase
 {
+    private readonly OpcionesCorreo _opciones = opciones.Value;
+
     /// <summary>
     /// Registra una cuenta (RF-CA-01, RF-CA-02, RF-CA-14, RF-CA-15).
     /// Responde 202: la cuenta existe pero está inactiva hasta abrir el enlace.
@@ -274,10 +279,12 @@ public sealed class UsuariosController(
 private Guid UsuarioActual() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
     /// <summary>
-    /// Base pública donde vive el enlace del correo. La decide el host porque es quien
-    /// conoce el esquema, el host y el puerto reales de esta petición.
+    /// Base pública donde vive el enlace del correo. Se lee de configuración
+    /// (<c>Correo__UrlBasePublica</c>), no de la petición: detrás de un proxy inverso el
+    /// esquema y el host que ve este proceso son los internos, y el enlace tiene que
+    /// funcionar fuera de la petición que lo originó.
     /// </summary>
-    private string UrlBase() => $"{Request.Scheme}://{Request.Host}{Request.PathBase}";
+    private string UrlBase() => _opciones.UrlBasePublica;
 }
 
 /// <summary>Cuerpo de <c>POST /usuarios/registro</c>.</summary>
