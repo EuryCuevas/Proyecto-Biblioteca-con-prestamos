@@ -227,8 +227,9 @@ public class RegistroYActivacionTests : IClassFixture<FabricaDeAplicacionDePrueb
         Assert.Contains("/usuarios/activar?token=", cuerpo);
         Assert.Contains("Ana Ruiz", cuerpo);
 
-        // El enlace lleva el servidor y el esquema de la petición que lo pidió: por eso
-        // el correo sirve en cualquier entorno sin configurar una URL a mano.
+        // El enlace lleva la base pública CONFIGURADA (Correo__UrlBasePublica), no el
+        // esquema ni el host de la petición: si se dedujera de la petición, detrás de un
+        // proxy inverso el enlace apuntaría al host interno y no funcionaría fuera.
         Assert.Contains("http://localhost/usuarios/activar", cuerpo);
     }
 

@@ -143,12 +143,42 @@ Los nombres y su propósito están también en [`.env.example`](.env.example).
 | `Correo__Contrasena` | No | Contraseña o **contraseña de aplicación** del correo. Nunca se versiona. |
 | `Correo__UsarSsl` | No | `true` para STARTTLS. Por defecto `true`. |
 | `Correo__Remitente` | No | Dirección desde la que se envía. Sin ella el emisor avisa que falta y termina con código 1. |
+| `Correo__UrlBasePublica` | **Sí** | Base **absoluta** de los enlaces que van en el correo (activación y recuperación), p. ej. `https://biblioteca.ejemplo.test`. Sin ella la API no arranca. En `Development` `appsettings.Development.json` trae `http://localhost:5113`. |
 
 ### Cómo comprobar que una variable está definida
 
 ```powershell
 $env:ConnectionStrings__Biblioteca -ne $null
 $env:Correo__Host -ne $null
+$env:Correo__UrlBasePublica -ne $null
+```
+
+### La base pública de los enlaces del correo
+
+Los enlaces de activación y de recuperación **no se deducen de la petición**: se leen de
+`Correo__UrlBasePublica`. Detrás de un proxy inverso el esquema y el host que ve el proceso son
+los internos, y un enlace construido con ellos apuntaría a un host al que el destinatario del
+correo no puede llegar. Además, el enlace se genera al **encolar** el correo, no al pulsarlo, así
+que tampoco hay una petición viva de la que copiar el host.
+
+El valor debe ser una URL absoluta (`https://…` o `http://…`). Si falta o no es válida, **la
+API no arranca**: se comprueba al inicio, donde se arregla, y no más tarde con un enlace roto ya
+enviado.
+
+**Cómo dispararlo** — arranca con dos bases distintas y mira el cuerpo del correo encolado:
+
+```powershell
+$env:Correo__UrlBasePublica = "https://portal.biblioteca.test"
+dotnet run --project src/Biblioteca.Api
+# Registra una cuenta y mira CorreoEnCola.Cuerpo:
+#   https://portal.biblioteca.test/usuarios/activar?token=...
+```
+
+Lo mismo, automáticamente (arranca la aplicación con una base distinta de la del cliente de
+pruebas y comprueba que el enlace la usa):
+
+```powershell
+dotnet test tests/Biblioteca.Api.Tests --filter "FullyQualifiedName~BasePublicaDelEnlace"
 ```
 
 ### Datos que SÍ están en el repositorio
@@ -163,6 +193,11 @@ Estos valores **no son secretos** y viven en `appsettings.json`:
 | `Correo:MinutosBloqueo` | `15` | Decisión de negocio (RF-CA-19). |
 | `Correo:IntentosMaximos` | `5` | Decisión de negocio (RF-CA-19). |
 | `Correo:HorasValidezSesion` | `8` | Decisión de negocio. |
+
+`appsettings.Development.json` añade `Correo:UrlBasePublica` con `http://localhost:5113` (el
+puerto del perfil `http` de `launchSettings.json`). No es un secreto: es la dirección en la que
+se abre la aplicación mientras se desarrolla, y por eso vive sólo en el perfil de desarrollo.
+En cualquier otro entorno se define `Correo__UrlBasePublica`.
 
 ---
 
@@ -421,9 +456,9 @@ Sin resultados: esos patrones están en `.gitignore` y nunca se versionan (RD-10
 Get-Content .env.example
 ```
 
-Los valores de `Correo__Usuario`, `Correo__Contrasena` y `Correo__Remitente` aparecen
-**vacíos**. El de `ConnectionStrings__Biblioteca` aparece con la configuración de
-desarrollo, que no contiene contraseña porque usa autenticación de Windows.
+Los valores de `Correo__Usuario`, `Correo__Contrasena`, `Correo__Remitente` y
+`Correo__UrlBasePublica` aparecen **vacíos**. El de `ConnectionStrings__Biblioteca` aparece con
+la configuración de desarrollo, que no contiene contraseña porque usa autenticación de Windows.
 
 ### 6.10 La exigencia de rol de cada operación está en un solo punto (RF-CA-05)
 
@@ -512,7 +547,8 @@ FROM Usuario WHERE Correo = 'yo@ejemplo.com';
 -- El correo quedó encolado, con el enlace (RF-NOT-08).
 SELECT Destinatario, Estado, Cuerpo
 FROM CorreoEnCola WHERE Destinatario = 'yo@ejemplo.com';
--- Estado = Pendiente. En Cuerpo aparece: http://localhost:5XXX/usuarios/activar?token=...
+-- Estado = Pendiente. En Cuerpo aparece: <base>/usuarios/activar?token=...
+--   <base> es Correo__UrlBasePublica (§3); en desarrollo, http://localhost:5113.
 ```
 
 ```powershell
@@ -796,8 +832,8 @@ SELECT TOP 1 Cuerpo FROM CorreoEnCola
 WHERE Destinatario = 'ana@example.com' ORDER BY CreadoEn DESC;
 ```
 
-El valor que va detrás de `?codigo=` en el enlace es `$codigo`. En la base **sólo queda su
-SHA-256**, nunca el valor en claro:
+El valor que va detrás de `?codigo=` en el enlace es `$codigo`; la base del enlace es
+`Correo__UrlBasePublica` (§3). En la base **sólo queda su SHA-256**, nunca el valor en claro:
 
 ```sql
 SELECT CONVERT(VARCHAR(64), CodigoHash, 2) AS HashHex, EmitidoEn, VenceEn, UsadoEn
@@ -1252,6 +1288,7 @@ credencial cerrada. Son las que vigilan el hilo de §6.10.
 | **RF-CA-05** — un solo punto de exigencia de rol | `src/Biblioteca.Identidad/PoliticaDeOperaciones.cs` |
 | RF-CA-05 — que no se pueda saltar | `src/Biblioteca.Api/Seguridad/ValidarOperacionesDeclaradasConvention.cs` |
 | RF-CA-05 — que la exigencia de rol se evalúe de verdad | `RequisitoDeOperacion`, en la política de repliego de `Program.cs` + `RequisitoDeOperacionHandler` (§6.10) |
+| **RD-10 / RF-CA-16 / RF-CA-09** — la base de los enlaces del correo | `OpcionesCorreo.UrlBasePublica` (`Correo__UrlBasePublica`), validada al arrancar en `Program.cs`; la usan `UsuariosController` y `ContrasenasController` (§3) |
 | RF-CA-04 — dos roles, y todo usuario tiene exactamente uno | `Rol` (enum de dos valores) + `ServicioDeAdministracion.CambiarRolAsync`, que **sustituye** el rol |
 | RF-CA-04 — que ningún rol quede fuera de la tabla | `PoliticaDeOperaciones.Requisitos` + prueba `Todo_rol_del_enum_aparece_en_la_politica_de_operaciones` |
 | **RF-CA-06 / RD-06** — el Estándar recibe un rechazo explícito | `[RequiereOperacion]` en la acción + `RequisitoDeOperacionHandler`, evaluado en la política de repliego (§6.10, §6.20) |
@@ -1376,5 +1413,5 @@ dotnet test Biblioteca.sln
 | `Biblioteca.Nucleo.Tests` | 10 | Tipos de error, contrato de auditoría |
 | `Biblioteca.Identidad.Tests` | 44 | Política de operaciones (RF-CA-05), guard de arranque, contraseñas (RF-CA-14), generación de tokens |
 | `Biblioteca.Biblioteca.Tests` | 32 | Estructura de la máquina de estados (RF-NEG-03/04/05) y relaciones del modelo de datos (RF-NEG-01, RD-03) |
-| `Biblioteca.Api.Tests` | 107 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17), sesión de extremo a extremo (RF-CA-03, 07, 18, 19), contraseñas de extremo a extremo (RF-CA-09, 10, 11, 12, 13, 22) y administración de usuarios de extremo a extremo (RF-CA-04, 06, 08, 20, 21) |
-| **Total** | **193** | |
+| `Biblioteca.Api.Tests` | 110 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17), sesión de extremo a extremo (RF-CA-03, 07, 18, 19), contraseñas de extremo a extremo (RF-CA-09, 10, 11, 12, 13, 22), administración de usuarios de extremo a extremo (RF-CA-04, 06, 08, 20, 21) y la base pública de los enlaces del correo (`Correo__UrlBasePublica`) |
+| **Total** | **196** | |

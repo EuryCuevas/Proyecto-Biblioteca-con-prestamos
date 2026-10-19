@@ -2,8 +2,10 @@ using System.Security.Claims;
 using Biblioteca.Identidad;
 using Biblioteca.Identidad.Autorizacion;
 using Biblioteca.Identidad.Contrasenas;
+using Biblioteca.Nucleo.Configuracion;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Biblioteca.Api.Controllers;
 
@@ -18,8 +20,12 @@ namespace Biblioteca.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("contrasenas")]
-public sealed class ContrasenasController(IServicioDeContrasenas contrasenas) : ControllerBase
+public sealed class ContrasenasController(
+    IServicioDeContrasenas contrasenas,
+    IOptions<OpcionesCorreo> opciones) : ControllerBase
 {
+    private readonly OpcionesCorreo _opciones = opciones.Value;
+
     /// <summary>
     /// Pide un código de recuperación (RF-CA-09, RF-CA-10). Responde 202 SIEMPRE, exista
     /// o no ese correo: el cuerpo de la respuesta es idéntico en los dos casos, y es lo
@@ -130,10 +136,12 @@ public sealed class ContrasenasController(IServicioDeContrasenas contrasenas) : 
                        "La petición llegó autenticada sin ClaimTypes.NameIdentifier."));
 
     /// <summary>
-    /// Base pública donde vive el enlace del correo. La decide el host porque es quien
-    /// conoce el esquema, el host y el puerto reales de esta petición.
+    /// Base pública donde vive el enlace del correo. Se lee de configuración
+    /// (<c>Correo__UrlBasePublica</c>), no de la petición: detrás de un proxy inverso el
+    /// esquema y el host que ve este proceso son los internos, y el enlace tiene que
+    /// funcionar fuera de la petición que lo originó.
     /// </summary>
-    private string UrlBase() => $"{Request.Scheme}://{Request.Host}{Request.PathBase}";
+    private string UrlBase() => _opciones.UrlBasePublica;
 }
 
 /// <summary>Cuerpo de <c>POST /contrasenas/recuperacion</c>.</summary>
