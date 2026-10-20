@@ -313,6 +313,8 @@ Abrir **SSMS** → base `Biblioteca`. Deben existir estas diez tablas:
 | `TokenActivacion` | Core · Identidad | Token hasheado, emitido, vence, usado |
 | `CodigoRecuperacion` | Core · Identidad | Código hasheado, emitido, vence, usado |
 | `CorreoEnCola` | Core · Correo | Destinatario, asunto, cuerpo, estado, intentos, creado, enviado, último error |
+| `SolicitudPermiso` | Core · Permisos (pieza 2) | Solicitante, operación, estado, creada/aprobada/aplicada/rechazada, motivo rechazo |
+| `Permiso` | Core · Permisos (pieza 2) | Usuario, operación, otorgadoEn, solicitudId |
 | `Recurso` | Módulo de negocio | Título, autor, ISBN, editorial, año, género, activo |
 | `Ejemplar` | Módulo de negocio | Copia física: código, recurso al que pertenece, ingreso, retirado |
 | `Socio` | Módulo de negocio | Número de socio, usuario del Core, alta, activo, cupos |
@@ -1039,7 +1041,72 @@ Invoke-RestMethod http://localhost:5XXX/usuarios -Headers @{ Authorization = "Be
 La respuesta debe ser un `ProblemDetails` **sin** traza de pila, sin ruta de archivo, sin
 nombre de tabla y sin la cadena de conexión. Sólo el mensaje del dominio.
 
-### 6.20 Administrar usuarios: listado, cambio de rol y desactivación (RF-CA-04, 05, 06, 08, 20, 21)
+### 6.20 Gestión de permisos: solicitud, aprobación, rechazo y aplicación automática (RF-GP-01..07)
+
+Las solicitudes viven en las tablas `SolicitudPermiso` y `Permiso` (pieza 2). Las transiciones se resuelven en un único punto (`TransicionesSolicitud`), la autorización se verifica en el servidor y la aplicación del permiso es automática al aprobar (RF-GP-05). El permiso otorgado se consulta **en vivo** por el guard, sin necesidad de volver a iniciar sesión.
+
+```powershell
+# Preparación: tener un usuario Estándar y un usuario Administrador.
+# (Usar los creados en los pasos anteriores o crear con herramientas SQL/SSMS)
+```
+
+#### 6.20a Crear una solicitud (RF-GP-01)
+Un usuario Estándar crea una solicitud; nace en `Pendiente`.
+
+```http
+POST http://localhost:5XXX/solicitudes
+Cookie: ...credencial de sesión del Estándar...
+{"operacion":"usuarios.listar"}
+```
+
+Respuesta esperada: `202 Accepted` con `id`, `estado`: `"Pendiente"`, `operacion`, `creadaEn`.  
+Comprobar en SQL: `SELECT Estado FROM SolicitudPermiso WHERE Id = '<guid>'` → `Pendiente`.
+
+#### 6.20b Un Administrador consulta las pendientes; un Estándar no ve las de otros (RF-GP-02)
+```http
+GET http://localhost:5XXX/solicitudes/pendientes
+Cookie: ...credencial de sesión del Administrador...
+```
+Respuesta: `200 OK` con la lista de pendientes.  
+Un Estándar que llame a la misma ruta recibe `403 Forbidden`.  
+El Estándar puede consultar las suyas: `GET /solicitudes/mias` devuelve solo las creadas por él (nunca las de otros).
+
+#### 6.20c Aprobar registra quién y cuándo (RF-GP-03)
+```http
+POST http://localhost:5XXX/solicitudes/aprobar
+Cookie: ...credencial de sesión del Administrador...
+{"solicitudId":"<guid>"}
+```
+Respuesta: `200 OK` con `estado`: `"Aplicada"`, `aprobadaPorId`, `aprobadaEn`, `aplicadaEn`.  
+Comprobar en SQL: `SolicitudPermiso` tiene `AprobadaPorId`, `AprobadaEn`, `AplicadaEn` no nulos; `Permiso` se ha creado con `UsuarioId` = solicitante y `Operacion` = la solicitada.
+
+#### 6.20d Rechazar exige motivo (RF-GP-04)
+```http
+POST http://localhost:5XXX/solicitudes/rechazar
+Cookie: ...credencial de sesión del Administrador...
+{"solicitudId":"<guid>","motivo":"No procede"}
+```
+Respuesta: `200 OK` con `estado`: `"Rechazada"`, `rechazadaPorId`, `rechazadaEn`, `motivoRechazo`.  
+Si se omite o deja vacío el motivo, el rechazo **no se completa** con `400 BadRequest`/`422 UnprocessableEntity` y el estado permanece `Pendiente`.  
+Comprobar en SQL: `MotivoRechazo` guardado, `RechazadaPorId/RechazadaEn` registrados.
+
+#### 6.20e Aplicación automática (RF-GP-05)
+Tras aprobar la solicitud del Estándar para `usuarios.listar`:
+1. El Estándar, **con la misma sesión**, llama a `GET /usuarios` (operación reservada a Administrador).
+2. Antes de aprobar recibía `403 Forbidden`.
+3. **Tras la aprobación recibe `200 OK`** sin volver a iniciar sesión: el guard consulta el permiso otorgado **en vivo**.
+
+#### 6.20f Transiciones prohibidas y estado sin cambios (RF-GP-06)
+- **Aprobar dos veces la misma solicitud:** la segunda aprobación se rechaza con `422 UnprocessableEntity`/`409 Conflict`/`400` según el caso y **el estado no cambia** (sigue `Aplicada`).
+- **Pasar de `Rechazada` a `Aplicada`:** se rechaza y **el estado sigue `Rechazada`**.
+Las transiciones solo son las declaradas en `TransicionesSolicitud` (tabla única).
+
+#### 6.20g Nadie resuelve su propia solicitud (RF-GP-07)
+Un Administrador que intenta aprobar o rechazar una solicitud creada por **él mismo** recibe un rechazo (`422 UnprocessableEntity`) y **el estado no cambia** (sigue `Pendiente`).
+
+Las pruebas unitarias de `tests/Biblioteca.Permisos.Tests` verifican estos casos directamente sobre el dominio sin levantar la aplicación completa (RD-12).
+
+### 6.21 Administrar usuarios: listado, cambio de rol y desactivación (RF-CA-04, 05, 06, 08, 20, 21)
 
 Cuatro endpoints, todos reservados al Administrador:
 
@@ -1390,6 +1457,11 @@ Para que quede claro que es alcance, y no omisión:
 | `POST` | `/usuarios/cambiar-rol` | Credencial de sesión, rol Administrador | Sustituye el rol de un usuario y cierra sus sesiones (RF-CA-08) |
 | `POST` | `/usuarios/desactivar` | Credencial de sesión, rol Administrador | Desactiva la cuenta y mata sus credenciales (RF-CA-20) |
 | `POST` | `/usuarios/reactivar` | Credencial de sesión, rol Administrador | Reactiva la cuenta; no devuelve sus sesiones ni levanta el bloqueo (RF-CA-20) |
+| `POST` | `/solicitudes` | Credencial de sesión, Estándar o Administrador | Crear solicitud de permiso (RF-GP-01) |
+| `GET` | `/solicitudes/pendientes` | Credencial de sesión, rol Administrador | Listar solicitudes pendientes (RF-GP-02) |
+| `GET` | `/solicitudes/mias` | Credencial de sesión, Estándar o Administrador | Listar mis solicitudes (RF-GP-02) |
+| `POST` | `/solicitudes/aprobar` | Credencial de sesión, rol Administrador | Aprobar solicitud, registra quién/cuándo y aplica permiso automáticamente (RF-GP-03, 05, 07) |
+| `POST` | `/solicitudes/rechazar` | Credencial de sesión, rol Administrador | Rechazar con motivo (RF-GP-04, 07) |
 
 Las tres acciones de registro, `POST /sesion/iniciar` y las tres de recuperación son públicas
 a propósito: todavía no hay identidad que exigir. Es el mismo tratamiento que recibe `/salud`
@@ -1402,7 +1474,13 @@ Administrador sería la vía más corta para que cualquiera se autoasignara el r
 primer Administrador se nombra una vez sobre la base (§6.20) y a partir de ahí se usa `POST
 /usuarios/cambiar-rol`.
 
-### Pruebas
+## Pruebas
+
+```powershell
+dotnet test tests/Biblioteca.Permisos.Tests
+```
+
+La suite anterior corre desde un clon limpio sin base de datos (RD-12). Para ejecutar el resto de pruebas de integración con SQL Server:
 
 ```powershell
 dotnet test Biblioteca.sln
@@ -1413,5 +1491,6 @@ dotnet test Biblioteca.sln
 | `Biblioteca.Nucleo.Tests` | 10 | Tipos de error, contrato de auditoría |
 | `Biblioteca.Identidad.Tests` | 44 | Política de operaciones (RF-CA-05), guard de arranque, contraseñas (RF-CA-14), generación de tokens |
 | `Biblioteca.Biblioteca.Tests` | 32 | Estructura de la máquina de estados (RF-NEG-03/04/05) y relaciones del modelo de datos (RF-NEG-01, RD-03) |
+| `Biblioteca.Permisos.Tests` | 7 | Máquina de estados de solicitudes (RF-GP-01..07), transición válida y prohibida, auto-resolución, motivo obligatorio (RD-04, RD-12) |
 | `Biblioteca.Api.Tests` | 110 | Arranque real contra SQL Server, barrido de RF-CA-05 sobre los controladores reales, registro y activación de extremo a extremo (RF-CA-01, 02, 14, 15, 16, 17), sesión de extremo a extremo (RF-CA-03, 07, 18, 19), contraseñas de extremo a extremo (RF-CA-09, 10, 11, 12, 13, 22), administración de usuarios de extremo a extremo (RF-CA-04, 06, 08, 20, 21) y la base pública de los enlaces del correo (`Correo__UrlBasePublica`) |
-| **Total** | **196** | |
+| **Total** | **203** | |

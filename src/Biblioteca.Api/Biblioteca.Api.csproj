@@ -5,6 +5,7 @@
     <ProjectReference Include="..\Biblioteca.Identidad\Biblioteca.Identidad.csproj" />
     <ProjectReference Include="..\Biblioteca.Correo\Biblioteca.Correo.csproj" />
     <ProjectReference Include="..\Biblioteca.Biblioteca\Biblioteca.Biblioteca.csproj" />
+    <ProjectReference Include="..\Biblioteca.Permisos\Biblioteca.Permisos.csproj" />
   </ItemGroup>
 
   <ItemGroup>

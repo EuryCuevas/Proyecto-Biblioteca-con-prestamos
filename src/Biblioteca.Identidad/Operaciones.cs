@@ -26,6 +26,7 @@ public static class Operaciones
     // --- Gestión de permisos (pieza 2, semanas 6-8) ---
     public const string SolicitudesCrear = "solicitudes.crear";
     public const string SolicitudesListarPendientes = "solicitudes.listarPendientes";
+    public const string SolicitudesListarMias = "solicitudes.listarMias";
     public const string SolicitudesAprobar = "solicitudes.aprobar";
     public const string SolicitudesRechazar = "solicitudes.rechazar";
 

@@ -38,7 +38,8 @@ public static class PoliticaDeOperaciones
             [Operaciones.UsuariosForzarRestablecimiento] = [Rol.Administrador],
 
             // --- Gestión de permisos (RF-CA-05 del Core, pieza 2) ---
-            [Operaciones.SolicitudesCrear] = [Rol.Estandar],
+            [Operaciones.SolicitudesCrear] = [Rol.Estandar, Rol.Administrador],
+            [Operaciones.SolicitudesListarMias] = [Rol.Estandar, Rol.Administrador],
             [Operaciones.SolicitudesListarPendientes] = [Rol.Administrador],
             [Operaciones.SolicitudesAprobar] = [Rol.Administrador],
             [Operaciones.SolicitudesRechazar] = [Rol.Administrador],

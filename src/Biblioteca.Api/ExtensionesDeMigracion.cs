@@ -1,11 +1,12 @@
 using Biblioteca.Biblioteca.Persistencia;
 using Biblioteca.Correo.Persistencia;
 using Biblioteca.Identidad.Persistencia;
+using Biblioteca.Permisos.Persistencia;
 using Microsoft.EntityFrameworkCore;
 
 namespace Biblioteca.Api;
 
-/// <summary>Aplica las migraciones de las tres piezas al arrancar la API.</summary>
+/// <summary>Aplica las migraciones de las cuatro piezas al arrancar la API.</summary>
 public static class ExtensionesDeMigracion
 {
     public static async Task AplicarMigracionesAsync(IServiceProvider servicios)
@@ -22,5 +23,8 @@ public static class ExtensionesDeMigracion
 
         var biblioteca = servicio.ServiceProvider.GetRequiredService<BibliotecaDbContext>();
         await biblioteca.Database.MigrateAsync();
+
+        var permisos = servicio.ServiceProvider.GetRequiredService<PermisosDbContext>();
+        await permisos.Database.MigrateAsync();
     }
 }

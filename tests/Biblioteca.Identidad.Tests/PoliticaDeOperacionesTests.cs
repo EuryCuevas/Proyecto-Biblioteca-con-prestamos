@@ -77,6 +77,7 @@ public class PoliticaDeOperacionesTests
         Operaciones.CerrarSesion,
         Operaciones.CambiarPasswordPropia,
         Operaciones.SolicitudesCrear,
+        Operaciones.SolicitudesListarMias,
         Operaciones.DocumentosSubir,
         Operaciones.DocumentosListar,
         Operaciones.DocumentosDescargar,

@@ -16,6 +16,8 @@ using Biblioteca.Identidad.Registro;
 using Biblioteca.Identidad.Sesiones;
 using Biblioteca.Nucleo.Auditoria;
 using Biblioteca.Nucleo.Configuracion;
+using Biblioteca.Permisos.Persistencia;
+using Biblioteca.Permisos.Solicitudes;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -60,6 +62,9 @@ builder.Services.AddDbContextFactory<CorreoDbContext>(o => o.UseSqlServer(conexi
 builder.Services.AddDbContextFactory<BibliotecaDbContext>(o => o.UseSqlServer(conexion, sql =>
     sql.MigrationsAssembly(typeof(Program).Assembly.FullName)));
 
+builder.Services.AddDbContextFactory<PermisosDbContext>(o => o.UseSqlServer(conexion, sql =>
+    sql.MigrationsAssembly(typeof(Program).Assembly.FullName)));
+
 // Un único reloj para todo el sistema (RD-11). Inyectarlo hace que los plazos de
 // 15 minutos y las vigencias sean comprobables con un reloj simulado en las pruebas.
 builder.Services.AddSingleton(TimeProvider.System);
@@ -94,6 +99,10 @@ builder.Services.AddScoped<IServicioDeContrasenas, ServicioDeContrasenas>();
 // cuatro anteriores admiten Estándar y Administrador, y ésta sólo Administrador
 // (RF-CA-04, RF-CA-06, RF-CA-08, RF-CA-20, RF-CA-21).
 builder.Services.AddScoped<IServicioDeAdministracion, ServicioDeAdministracion>();
+
+// Gestión de permisos (pieza 2, RF-GP-01..07)
+builder.Services.AddScoped<IServicioDeSolicitudes, ServicioDeSolicitudes>();
+builder.Services.AddScoped<IServicioDePermisos, ServicioDePermisos>();
 
 // El hash de contraseña se inyecta, no se instancia dentro del servicio, para que las
 // pruebas puedan sustituirlo por uno rápido. El algoritmo por defecto es PBKDF2 con sal

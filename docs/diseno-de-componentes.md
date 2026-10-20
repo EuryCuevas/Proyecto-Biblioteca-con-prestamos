@@ -113,13 +113,32 @@ Elementos:
 En la Práctica 1 sólo existe la **estructura** de la máquina de estados
 (RF-NEG-03/04/05, RD-04). Ver [`docs/maquina-de-estados.md`](maquina-de-estados.md).
 
-### 2.5 Host HTTP — `src/Biblioteca.Api`
+### 2.5 Gestión de permisos — `src/Biblioteca.Permisos` (pieza 2)
+
+| | |
+|---|---|
+| **Responsabilidad** | Solicitudes de permiso y aprobación: máquina de estados con transiciones resueltas en un solo punto, otorgamiento automático de permisos y consulta de permisos otorgados. |
+| **NO incluye** | Envío de correo, auditoría de resolución, lógica de documentos o reportes. |
+| **Depende de** | `Nucleo`. Usa `Operaciones`/`PoliticaDeOperaciones` del Core para la política. |
+
+Elementos:
+
+| Elemento | Rol |
+|---|---|
+| `EstadoSolicitud` / `EstadosSolicitud` / `TransicionesSolicitud` | Estados y transiciones únicas (RD-04). Solo `Pendiente→Aprobada`, `Aprobada→Aplicada`, `Pendiente→Rechazada`. |
+| `SolicitudPermiso` | Entidad con validación antes de mutar; registra quién/aprobó/cuándo/motivo; prohíbe auto-resolución. |
+| `Permiso` | Permiso otorgado tras aprobación (aplicación automática). |
+| `IServicioDeSolicitudes` / `ServicioDeSolicitudes` | Crear/listar/aprobar/rechazar. Al aprobar pasa a `Aplicada` y otorga el permiso. |
+| `IServicioDePermisos` / `ServicioDePermisos` | Consulta en vivo de permisos otorgados para el guard de autorización. |
+| `PermisosDbContext` | Contexto propio, tablas `SolicitudPermiso` y `Permiso`. |
+
+### 2.6 Host HTTP — `src/Biblioteca.Api`
 
 | | |
 |---|---|
 | **Responsabilidad** | Traducir HTTP en llamadas a las piezas. Configuración,DI, migraciones y traducción de errores. |
 | **NO incluye** | Reglas de negocio. Ni una sola. |
-| **Depende de** | De las tres piezas. |
+| **Depende de** | De las cuatro piezas. |
 
 | Elemento | Rol |
 |---|---|
@@ -315,6 +334,7 @@ La revisión penaliza el exceso tanto como la omisión.
 | `Identidad` | El envío de correo. Encola a través de un puerto, no envía. Tampoco la persistencia de auditoría. |
 | `Correo` | Nada de identidad. No sabe quién encoló ni por qué. No implementa plantillas de correo. |
 | `Biblioteca` | Nada del Core. En la Práctica 1, tampoco la lógica de los préstamos: sólo la estructura de estados. |
+| `Permisos` | Nada de correo, auditoría o documentos. Solo solicitudes, aprobación y otorgamiento de permisos. |
 | `Api` | **Ninguna regla de negocio.** Si aparece un `if` de negocio en un controlador, es un error de diseño. |
 | `Correo.Enviador` | No lee nada de `Identidad`. No aplica plantillas: entrega el cuerpo que ya está en la fila. |
 
